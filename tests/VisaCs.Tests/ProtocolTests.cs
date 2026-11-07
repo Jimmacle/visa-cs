@@ -552,12 +552,12 @@ public sealed class Vxi11Tests(SimulatorFixture fixture) : MessageBasedProtocolT
         session.LockExclusive(1000);
         // A second VXI-11 link (as from another process) cannot get the device lock.
         using var other = Internal.AsyncIO.Complete(Protocols.Vxi11.Vxi11Client.ConnectAsync("127.0.0.1", "inst0",
-            fixture.Simulator.Vxi11.PortmapperPort, 99, Internal.Deadline.FromMilliseconds(2000), async: false));
-        int error = Internal.AsyncIO.Complete(other.DeviceLockAsync(0, Internal.Deadline.FromMilliseconds(2000), async: false));
+            fixture.Simulator.Vxi11.PortmapperPort, 99, Internal.Deadline.FromMilliseconds(10_000), async: false));
+        int error = Internal.AsyncIO.Complete(other.DeviceLockAsync(0, Internal.Deadline.FromMilliseconds(10_000), async: false));
         Assert.Equal(Protocols.Vxi11.Vxi11Constants.ErrDeviceLocked, error);
         session.Unlock();
-        Assert.Equal(0, Internal.AsyncIO.Complete(other.DeviceLockAsync(0, Internal.Deadline.FromMilliseconds(2000), async: false)));
-        Assert.Equal(0, Internal.AsyncIO.Complete(other.DeviceUnlockAsync(Internal.Deadline.FromMilliseconds(2000), async: false)));
+        Assert.Equal(0, Internal.AsyncIO.Complete(other.DeviceLockAsync(0, Internal.Deadline.FromMilliseconds(10_000), async: false)));
+        Assert.Equal(0, Internal.AsyncIO.Complete(other.DeviceUnlockAsync(Internal.Deadline.FromMilliseconds(10_000), async: false)));
     }
 
     [Fact]

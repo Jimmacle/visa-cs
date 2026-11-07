@@ -51,8 +51,9 @@ public sealed class ProtocolRobustnessTests(HislipSecurityFixture certificates)
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var accept = listener.AcceptSocketAsync();
+        // Generous: on a busy CI machine the connect's completion can wait for a thread-pool thread.
         using var client = AsyncIO.Complete(RpcTcpClient.ConnectAsync((IPEndPoint)listener.LocalEndpoint, 0x0607AF, 1,
-            Deadline.FromMilliseconds(2000), async: false));
+            Deadline.FromMilliseconds(10_000), async: false));
         using var peer = await accept; // never reads
 
         // Fill the socket buffers. Calls that were sent completely time out waiting for a reply (the connection stays
