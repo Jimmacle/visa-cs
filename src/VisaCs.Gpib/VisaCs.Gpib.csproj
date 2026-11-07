@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>VisaCs.Gpib</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>GPIB (IEEE 488) through any NI-488.2 compatible driver library (NI, Keysight, linux-gpib), bound at run time: device and board I/O, serial poll, SRQ and bus control.</Description>
+    <PackageTags>gpib;ieee488;ni488;linux-gpib;instrument</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
+    <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
+  </ItemGroup>
+</Project>

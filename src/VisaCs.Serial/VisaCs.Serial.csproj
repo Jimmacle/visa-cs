@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>VisaCs.Serial</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>Serial ports on Windows (Win32 comm API) and Linux/macOS (termios) without System.IO.Ports: synchronous and asynchronous I/O with a timeout per read and write, abort from another thread, modem lines and break.</Description>
+    <PackageTags>serial;rs232;uart;termios;comport;instrument</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
+    <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
+    <Compile Include="..\Shared\Libc.cs" Link="Internal\Libc.cs" />
+    <Compile Include="..\Shared\NativeLibraries.cs" Link="Internal\NativeLibraries.cs" />
+    <Compile Include="..\Shared\UnixPoller.cs" Link="Internal\UnixPoller.cs" />
+  </ItemGroup>
+</Project>

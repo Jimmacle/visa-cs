@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>VisaCs</RootNamespace>
+    <AssemblyName>VisaCs</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageId>VisaCs</PackageId>
+    <Description>A pure C# implementation of VISA (Virtual Instrument Software Architecture): VXI-11, HiSLIP, raw TCP sockets, USBTMC/USB488, serial, GPIB and VICP, with no dependency on a vendor VISA library.</Description>
+    <PackageTags>visa;scpi;instrument;test;measurement;vxi11;hislip;usbtmc;gpib;lxi</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
+    <ProjectReference Include="..\VisaCs.Serial\VisaCs.Serial.csproj" />
+    <ProjectReference Include="..\VisaCs.Usb\VisaCs.Usb.csproj" />
+    <ProjectReference Include="..\VisaCs.Gpib\VisaCs.Gpib.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
+    <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="VisaCs.Simulation" />
+    <InternalsVisibleTo Include="VisaCs.Tests" />
+  </ItemGroup>
+</Project>

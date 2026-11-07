@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>visashell</AssemblyName>
+    <RootNamespace>VisaShell</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\VisaCs\VisaCs.csproj" />
+    <ProjectReference Include="..\..\src\VisaCs.Simulation\VisaCs.Simulation.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>VisaCs.Usb</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>USB host access without a vendor SDK: device enumeration and control, bulk and interrupt transfers through WinUSB (Windows), usbfs (Linux) or libusb-1.0, behind one IUsbBackend interface.</Description>
+    <PackageTags>usb;winusb;usbfs;libusb;instrument</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
+    <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
+    <Compile Include="..\Shared\Libc.cs" Link="Internal\Libc.cs" />
+    <Compile Include="..\Shared\NativeLibraries.cs" Link="Internal\NativeLibraries.cs" />
+    <Compile Include="..\Shared\UnixPoller.cs" Link="Internal\UnixPoller.cs" />
+  </ItemGroup>
+</Project>

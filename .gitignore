@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+artifacts/
+TestResults/
+*.nupkg
+*.snupkg
+
+# IDE and tool state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Stand-in GPIB driver libraries (built by tests/Native/build-fake-gpib.*)
+tests/Native/*.dll
+tests/Native/*.so
+tests/Native/*.dylib
+tests/Native/*.obj
+tests/Native/*.o
+tests/Native/*.exp
+tests/Native/*.lib

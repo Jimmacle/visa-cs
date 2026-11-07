@@ -1,0 +1,147 @@
+name: CI
+
+# Pull request security (see CONTRIBUTING.md):
+# - The barrier: the repository does not run workflows for pull requests from forks, so code from people without
+#   write access never runs here. A pull_request run takes this file from the pull request itself, so the job
+#   conditions below are only a second line of defense.
+# - pull_request only (never pull_request_target or workflow_run), a read-only token that is not left on disk,
+#   no secrets, no caches, GitHub-hosted runners, and only GitHub's own actions pinned to commit SHAs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build VisaCs.slnx -c Release
+
+      - name: Test
+        run: dotnet test tests/VisaCs.Tests -c Release --no-build --logger trx --results-directory TestResults/default
+
+      # The NI-488.2 binding runs against a stand-in driver library built from tests/Native/fake_ni4882.c, once
+      # for each kind of driver: NI-like, without ibnotify (like linux-gpib), and without asynchronous calls.
+      - name: Build stand-in GPIB libraries (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+          call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          call tests\Native\build-fake-gpib.cmd || exit /b 1
+
+      - name: Test GPIB binding (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($variant in 'fake_ni4882', 'fake_ni4882_nonotify', 'fake_ni4882_noasync') {
+            $env:VISACS_TEST_GPIB_LIBRARY = "$PWD\tests\Native\$variant.dll"
+            dotnet test tests/VisaCs.Tests -c Release --no-build --filter "FullyQualifiedName~Gpib" --logger trx --results-directory "TestResults/$variant"
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
+      - name: Test GPIB binding (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: |
+          sh tests/Native/build-fake-gpib.sh
+          for variant in libfake_ni4882 libfake_ni4882_nonotify libfake_ni4882_noasync; do
+            VISACS_TEST_GPIB_LIBRARY="$PWD/tests/Native/$variant.so" \
+              dotnet test tests/VisaCs.Tests -c Release --no-build --filter "FullyQualifiedName~Gpib" \
+              --logger trx --results-directory "TestResults/$variant"
+          done
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults
+
+  linux-kernel:
+    # Kernel USB through USB/IP (usbfs and libusb backends) and real PCI configuration space need root.
+    name: Test kernel USB and PCI (Linux, root)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Install the USB/IP kernel module and libusb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0
+          sudo modprobe vhci-hcd || { sudo apt-get install -y "linux-modules-extra-$(uname -r)" && sudo modprobe vhci-hcd; }
+
+      - name: Build
+        run: dotnet build VisaCs.slnx -c Release
+
+      - name: Test
+        run: |
+          sudo --preserve-env=PATH,DOTNET_ROOT env DOTNET_CLI_HOME=/tmp/dotnet-root VISACS_TEST_USBIP=1 VISACS_TEST_PCI=1 \
+            dotnet test tests/VisaCs.Tests -c Release --no-build \
+            --filter "FullyQualifiedName~KernelTests|FullyQualifiedName~UsbBackendAsync|FullyQualifiedName~Pxi" \
+            --logger trx --results-directory TestResults/kernel
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-linux-kernel
+          path: TestResults
+
+  pack:
+    name: Pack
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Pack
+        run: dotnet pack VisaCs.slnx -c Release -o artifacts
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: artifacts/*.nupkg

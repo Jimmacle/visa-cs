@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>VisaCs</RootNamespace>
+    <Description>VISA status codes (VisaStatus) and the exception types shared by the VisaCs libraries.</Description>
+    <PackageTags>visa;instrument;test;measurement</PackageTags>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>VisaCs.Simulation</RootNamespace>
+    <Description>Simulated instruments and protocol servers (VXI-11, HiSLIP, raw socket, VICP, USBTMC, GPIB) for testing VisaCs without hardware.</Description>
+    <PackageTags>visa;instrument;simulator;testing;vxi11;hislip;usbtmc;gpib</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\VisaCs\VisaCs.csproj" />
+  </ItemGroup>
+
+  <!-- The simulator uses VisaCs internals (InternalsVisibleTo), so its package requires exactly the same VisaCs version
+       instead of NuGet's default "this version or later". -->
+  <Target Name="PinVisaCsVersion" AfterTargets="_GetProjectReferenceVersions">
+    <ItemGroup>
+      <_ProjectReferencesWithVersions Update="@(_ProjectReferencesWithVersions)" ProjectVersion="[%(ProjectVersion)]" />
+    </ItemGroup>
+  </Target>
+</Project>

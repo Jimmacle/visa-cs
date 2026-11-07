@@ -1,0 +1,21 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/samples/">
+    <Project Path="samples/VisaShell/VisaShell.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/VisaCs.Gpib/VisaCs.Gpib.csproj" />
+    <Project Path="src/VisaCs.Primitives/VisaCs.Primitives.csproj" />
+    <Project Path="src/VisaCs.Serial/VisaCs.Serial.csproj" />
+    <Project Path="src/VisaCs.Simulation/VisaCs.Simulation.csproj" />
+    <Project Path="src/VisaCs.Usb/VisaCs.Usb.csproj" />
+    <Project Path="src/VisaCs/VisaCs.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VisaCs.Tests/VisaCs.Tests.csproj" />
+  </Folder>
+</Solution>
