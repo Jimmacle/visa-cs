@@ -44,7 +44,10 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         try
         {
             var device = Assert.Single(backend.EnumerateDevices(), d => d.SerialNumber == UsbIpFixture.Serial);
-            return new Connection(backend, backend.Open(device, 0));
+            var connection = new Connection(backend, backend.Open(device, 0));
+            // Start from a clean device: a response to a transfer an earlier test cancelled may still be waiting.
+            Task.Run(() => DeviceClearAsync(connection)).GetAwaiter().GetResult();
+            return connection;
         }
         catch
         {
