@@ -19,7 +19,11 @@ public sealed class NonParallelCollection
 public sealed class AsyncScalabilityTests
 {
     [Fact]
-    public async Task PendingReadsHoldNoThreads()
+    public Task PendingReadsHoldNoThreads() =>
+        // Fail instead of hanging the whole run if reads do hold threads after all.
+        PendingReadsHoldNoThreadsCore().WaitAsync(TimeSpan.FromSeconds(60));
+
+    private static async Task PendingReadsHoldNoThreadsCore()
     {
         // A server that accepts connections and never sends anything.
         using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -42,11 +46,12 @@ public sealed class AsyncScalabilityTests
         });
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
 
-        // Cap the worker pool at its minimum size and leave four times as many reads pending. Reads that block a
-        // thread each would occupy every worker, and the work item below could not run until they timed out.
+        // Cap the worker pool and leave four times as many reads pending. Reads that block a thread each would occupy
+        // every worker, and the work item below could not run until they timed out. The cap is at least 8: on small
+        // machines (CI runners have 2-4 cores) the test framework itself needs a few pool threads.
         ThreadPool.GetMaxThreads(out int maxWorkers, out int maxIo);
         ThreadPool.GetMinThreads(out int minWorkers, out _);
-        int workers = Math.Max(minWorkers, Environment.ProcessorCount);
+        int workers = Math.Max(Math.Max(minWorkers, Environment.ProcessorCount), 8);
         int count = workers * 4;
         Assert.True(ThreadPool.SetMaxThreads(workers, maxIo));
         try

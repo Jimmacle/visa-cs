@@ -422,6 +422,8 @@ public sealed class SimulatedUsbTmcDevice
             Task next;
             lock (_sync)
             {
+                // A cancelled transfer (a USB/IP URB the host unlinked) must not take a packet meant for the next one.
+                cancellationToken.ThrowIfCancellationRequested();
                 if (_interrupts.TryDequeue(out var packet))
                 {
                     int n = Math.Min(packet.Length, buffer.Length);
@@ -546,6 +548,8 @@ public sealed class SimulatedUsbTmcDevice
             Task next;
             lock (_sync)
             {
+                // A cancelled transfer (a USB/IP URB the host unlinked) must not take a response meant for the next one.
+                cancellationToken.ThrowIfCancellationRequested();
                 if (_transfer is not null || !(_request is null || (_request.Value.Vendor ? _vendorData.Count == 0 : _current is null && _output.Count == 0)))
                     return TakeBulkIn(buffer.Span);
                 next = _changed.Next;
