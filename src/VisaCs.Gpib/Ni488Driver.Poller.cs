@@ -33,7 +33,9 @@ public sealed partial class Ni488Driver
 
     private void ScheduleRearm(Transfer transfer)
     {
-        Volatile.Write(ref transfer.RearmAt, Stopwatch.GetTimestamp() + CallbackGuardMs * Stopwatch.Frequency / 1000);
+        long delayMs = CallbackGuardMs;
+        for (int i = 0; i < transfer.Rearms; i++) delayMs *= 3;
+        Volatile.Write(ref transfer.RearmAt, Stopwatch.GetTimestamp() + delayMs * Stopwatch.Frequency / 1000);
         lock (_pollLock)
         {
             _rearms.Add(transfer);
@@ -105,6 +107,7 @@ public sealed partial class Ni488Driver
                 try
                 {
                     Rearm(transfer);
+                    if (!transfer.IsClaimed && ++transfer.Rearms < CallbackGuardRearms) ScheduleRearm(transfer);
                 }
                 catch (Exception)
                 {

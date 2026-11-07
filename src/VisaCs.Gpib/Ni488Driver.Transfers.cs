@@ -26,15 +26,21 @@ namespace VisaCs.Gpib;
 // static table and returns 0, so a late callback never touches released state. NI-488.2 rearms with a callback's
 // return value; whether that can undo an ibnotify made by another thread while the callback returns is not
 // documented. Arming therefore waits while a callback of the same descriptor runs in managed code, and arms once
-// more shortly after when a callback returned just before (the gap between our return and the library's rearm is
-// not observable). A watchdog re-arms transfers whose driver reports CMPL but whose callback has not come for a
+// a few more times shortly after when a callback returned just before (the gap between our return and the library's
+// rearm is not observable). A watchdog re-arms transfers whose driver reports CMPL but whose callback has not come for a
 // whole period; a callback without CMPL (failed rearm) or a failed ibnotify hands the transfer to the poller.
 public sealed unsafe partial class Ni488Driver
 {
     private const int WatchdogMs = 500;
 
-    /// <summary>A transfer armed this soon after a callback of its descriptor returned is armed once more after this time.</summary>
+    /// <summary>
+    /// A transfer armed this soon after a callback of its descriptor returned is armed again after this time, and
+    /// twice more at three times the previous gap while it is pending (20, 60 and 180 ms): the library's rearm after
+    /// a callback can come late on a loaded machine, and an extra arming is harmless.
+    /// </summary>
     private const int CallbackGuardMs = 20;
+
+    private const int CallbackGuardRearms = 3;
 
     /// <summary>Transfers armed with ibnotify, by the reference data passed to it.</summary>
     private static readonly ConcurrentDictionary<nint, Transfer> Notified = new();
@@ -437,6 +443,7 @@ public sealed unsafe partial class Ni488Driver
 
         /// <summary>When to arm ibnotify once more (a Stopwatch timestamp), for a transfer armed right after a callback.</summary>
         public long RearmAt;
+        public int Rearms; // guard rearms done so far (poller thread)
 
         public Ni488Driver Driver => Owner.Driver;
         public Ni488Api Api => Owner.Api;
