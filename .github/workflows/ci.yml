@@ -47,7 +47,7 @@ jobs:
         run: dotnet build VisaCs.slnx -c Release
 
       - name: Test
-        run: dotnet test tests/VisaCs.Tests -c Release --no-build --logger trx --results-directory TestResults/default
+        run: dotnet test tests/VisaCs.Tests -c Release --no-build --blame-hang-timeout 3m --logger trx --results-directory TestResults/default
 
       # The NI-488.2 binding runs against a stand-in driver library built from tests/Native/fake_ni4882.c, once
       # for each kind of driver: NI-like, without ibnotify (like linux-gpib), and without asynchronous calls.
@@ -65,7 +65,7 @@ jobs:
         run: |
           foreach ($variant in 'fake_ni4882', 'fake_ni4882_nonotify', 'fake_ni4882_noasync') {
             $env:VISACS_TEST_GPIB_LIBRARY = "$PWD\tests\Native\$variant.dll"
-            dotnet test tests/VisaCs.Tests -c Release --no-build --filter "FullyQualifiedName~Gpib" --logger trx --results-directory "TestResults/$variant"
+            dotnet test tests/VisaCs.Tests -c Release --no-build --blame-hang-timeout 3m --filter "FullyQualifiedName~Gpib" --logger trx --results-directory "TestResults/$variant"
             if ($LASTEXITCODE -ne 0) { exit 1 }
           }
 
@@ -75,12 +75,12 @@ jobs:
           sh tests/Native/build-fake-gpib.sh
           for variant in libfake_ni4882 libfake_ni4882_nonotify libfake_ni4882_noasync; do
             VISACS_TEST_GPIB_LIBRARY="$PWD/tests/Native/$variant.so" \
-              dotnet test tests/VisaCs.Tests -c Release --no-build --filter "FullyQualifiedName~Gpib" \
+              dotnet test tests/VisaCs.Tests -c Release --no-build --blame-hang-timeout 3m --filter "FullyQualifiedName~Gpib" \
               --logger trx --results-directory "TestResults/$variant"
           done
 
       - name: Upload test results
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ matrix.os }}
@@ -113,12 +113,12 @@ jobs:
       - name: Test
         run: |
           sudo --preserve-env=PATH,DOTNET_ROOT env DOTNET_CLI_HOME=/tmp/dotnet-root VISACS_TEST_USBIP=1 VISACS_TEST_PCI=1 \
-            dotnet test tests/VisaCs.Tests -c Release --no-build \
+            dotnet test tests/VisaCs.Tests -c Release --no-build --blame-hang-timeout 3m \
             --filter "FullyQualifiedName~KernelTests|FullyQualifiedName~UsbBackendAsync|FullyQualifiedName~Pxi" \
             --logger trx --results-directory TestResults/kernel
 
       - name: Upload test results
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-linux-kernel
