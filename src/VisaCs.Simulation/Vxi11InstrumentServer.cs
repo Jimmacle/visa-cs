@@ -95,6 +95,8 @@ public sealed class Vxi11InstrumentServer : IDisposable
             try
             {
                 _udp.Bind(new IPEndPoint(_bindAddress, _portmapper.Port));
+                // On macOS, disposing a UDP socket waits for a blocked receive, which nothing else wakes: let it time out.
+                _udp.ReceiveTimeout = 250;
                 break;
             }
             catch (SocketException) when (_requestedPortmapperPort == 0 && attempt < 20)

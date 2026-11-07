@@ -430,7 +430,7 @@ public sealed class GpibNativeDriverTests
         var read = HasAsyncCalls ? device.ReadAsync(new byte[64], null, Timeout.Infinite).AsTask() : null;
         var deviceWait = device.WaitForServiceRequestAsync(Timeout.Infinite).AsTask();
         var boardWait = board.WaitForServiceRequestAsync(Timeout.Infinite).AsTask();
-        Control(CallDelay, 300);
+        Control(CallDelay, 1500); // long enough that the clear below is still running when Dispose comes, even on a slow CI machine
         try
         {
             var clear = slow.ClearAsync(5000).AsTask(); // running on the worker thread

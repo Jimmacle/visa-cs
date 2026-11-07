@@ -95,6 +95,8 @@ public sealed class MdnsTestResponder : IDisposable
     {
         _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         _socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        // On macOS, disposing a UDP socket waits for a blocked receive, which nothing else wakes: let it time out.
+        _socket.ReceiveTimeout = 250;
     }
 
     /// <summary>The endpoint queries must be sent to.</summary>
