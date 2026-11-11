@@ -48,16 +48,16 @@ public sealed class ProtocolInternalsTests
     {
         var badSalt = new ScramSha256ClientMechanism("user", "pencil", null, channelBindingAvailable: false, nonce: "abc");
         badSalt.InitialResponse();
-        Assert.Equal(SecurityFailure.Authentication,
-            Assert.Throws<VisaSecurityException>(() => badSalt.Respond(Encoding.UTF8.GetBytes("r=abcdef,s=not base64!,i=4096"))).Failure);
+        Assert.Equal(LanSecurityFailure.Authentication,
+            Assert.Throws<LanSecurityException>(() => badSalt.Respond(Encoding.UTF8.GetBytes("r=abcdef,s=not base64!,i=4096"))).Failure);
 
         var tooMany = new ScramSha256ClientMechanism("user", "pencil", null, channelBindingAvailable: false, nonce: "abc");
         tooMany.InitialResponse();
-        Assert.Throws<VisaSecurityException>(() => tooMany.Respond(Encoding.UTF8.GetBytes("r=abcdef,s=AAAA,i=2000000000")));
+        Assert.Throws<LanSecurityException>(() => tooMany.Respond(Encoding.UTF8.GetBytes("r=abcdef,s=AAAA,i=2000000000")));
 
         var sameNonce = new ScramSha256ClientMechanism("user", "pencil", null, channelBindingAvailable: false, nonce: "abc");
         sameNonce.InitialResponse();
-        Assert.Throws<VisaSecurityException>(() => sameNonce.Respond(Encoding.UTF8.GetBytes("r=abc,s=AAAA,i=4096")));
+        Assert.Throws<LanSecurityException>(() => sameNonce.Respond(Encoding.UTF8.GetBytes("r=abc,s=AAAA,i=4096")));
     }
 
     [Fact]
@@ -68,6 +68,6 @@ public sealed class ProtocolInternalsTests
         var parsed = Hislip.ParseHeader(header);
         Assert.Equal(new HislipHeader(HislipMessageType.DataEnd, 1, 0xFFFFFF00, 42), parsed);
         header[0] = (byte)'X';
-        Assert.Equal(VisaStatus.ErrorIO, Assert.Throws<VisaException>(() => Hislip.ParseHeader(header)).Status);
+        Assert.Equal(LanError.ProtocolError, Assert.Throws<LanException>(() => Hislip.ParseHeader(header)).Error);
     }
 }

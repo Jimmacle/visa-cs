@@ -34,9 +34,16 @@ public sealed class VicpSession : MessageBasedSession
 
     private protected override async ValueTask OpenCoreAsync(int connectTimeoutMs, CancellationToken cancellationToken, bool async)
     {
-        _client = async
-            ? await VicpClient.ConnectAsync(_name.Host, connectTimeoutMs, Port, cancellationToken).ConfigureAwait(false)
-            : VicpClient.Connect(_name.Host, connectTimeoutMs, Port);
+        try
+        {
+            _client = async
+                ? await VicpClient.ConnectAsync(_name.Host, connectTimeoutMs, Port, cancellationToken).ConfigureAwait(false)
+                : VicpClient.Connect(_name.Host, connectTimeoutMs, Port);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
         _client.ServiceRequest += () => RaiseEvent(new ServiceRequestEventArgs());
     }
 
@@ -46,46 +53,78 @@ public sealed class VicpSession : MessageBasedSession
         return default;
     }
 
-    private protected override ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
+    private protected override async ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
     {
-        if (async) return Client.WriteAsync(data, end, deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Client.Write(data, end, deadline.RemainingMilliseconds);
-        return default;
+        try
+        {
+            if (async) await Client.WriteAsync(data, end, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
+            else Client.Write(data, end, deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
     private protected override async ValueTask<FillResult> FillCoreAsync(Memory<byte> target, Deadline deadline, bool async)
     {
-        var (count, end) = async
-            ? await Client.ReadAsync(target, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
-            : Client.Read(target, deadline.RemainingMilliseconds);
-        return new FillResult(count, end);
+        try
+        {
+            var (count, end) = async
+                ? await Client.ReadAsync(target, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.Read(target, deadline.RemainingMilliseconds);
+            return new FillResult(count, end);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
-    private protected override ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async)
+    private protected override async ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async)
     {
         DiscardInputBuffer();
-        return async
-            ? Client.ReadStatusByteAsync(deadline.RemainingMilliseconds, deadline.CancellationToken)
-            : new(Client.ReadStatusByte(deadline.RemainingMilliseconds));
+        try
+        {
+            return async
+                ? await Client.ReadStatusByteAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.ReadStatusByte(deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
-    private protected override ValueTask ClearCoreAsync(Deadline deadline, bool async)
+    private protected override async ValueTask ClearCoreAsync(Deadline deadline, bool async)
     {
-        if (async) return Client.DeviceClearAsync(deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Client.DeviceClear(deadline.RemainingMilliseconds);
-        return default;
+        try
+        {
+            if (async) await Client.DeviceClearAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
+            else Client.DeviceClear(deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
     private protected override ValueTask TriggerCoreAsync(Deadline deadline, bool async) => WriteCoreAsync("*TRG\n"u8.ToArray(), true, deadline, async);
 
-    private protected override ValueTask ControlRenCoreAsync(RemoteLocalMode mode, Deadline deadline, bool async)
+    private protected override async ValueTask ControlRenCoreAsync(RemoteLocalMode mode, Deadline deadline, bool async)
     {
         bool remote = mode is RemoteLocalMode.Assert or RemoteLocalMode.AssertAddress or RemoteLocalMode.AssertLocalLockout or
             RemoteLocalMode.AssertAddressLocalLockout;
         bool lockout = mode is RemoteLocalMode.AssertLocalLockout or RemoteLocalMode.AssertAddressLocalLockout;
-        if (async) return Client.SetRemoteAsync(remote, lockout, deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Client.SetRemote(remote, lockout, deadline.RemainingMilliseconds);
-        return default;
+        try
+        {
+            if (async) await Client.SetRemoteAsync(remote, lockout, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
+            else Client.SetRemote(remote, lockout, deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
     private protected override void FlushTransportInput() => Client.DiscardInput();

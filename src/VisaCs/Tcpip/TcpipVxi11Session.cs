@@ -68,9 +68,16 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
     {
         int clientId = Interlocked.Increment(ref _clientIdSeed);
         int port = ResourceManager.Options.Vxi11PortmapperPort;
-        _client = async
-            ? await Vxi11Client.ConnectAsync(Name.Host, Name.DeviceName, connectTimeoutMs, port, clientId, cancellationToken).ConfigureAwait(false)
-            : Vxi11Client.Connect(Name.Host, Name.DeviceName, connectTimeoutMs, port, clientId);
+        try
+        {
+            _client = async
+                ? await Vxi11Client.ConnectAsync(Name.Host, Name.DeviceName, connectTimeoutMs, port, clientId, cancellationToken).ConfigureAwait(false)
+                : Vxi11Client.Connect(Name.Host, Name.DeviceName, connectTimeoutMs, port, clientId);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
         Address = NetUtil.Normalize(_client.RemoteEndPoint.Address).ToString();
     }
 
@@ -79,9 +86,19 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         if (_client is null) return;
         if (ClosingWhileBusy) _client.Dispose();
         await StopInterruptChannelAsync(async).ConfigureAwait(false);
-        if (async) await _client.DestroyLinkAsync(1000).ConfigureAwait(false);
-        else _client.DestroyLink(1000);
-        _client.Dispose();
+        try
+        {
+            if (async) await _client.DestroyLinkAsync(1000).ConfigureAwait(false);
+            else _client.DestroyLink(1000);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
+        finally
+        {
+            _client.Dispose();
+        }
     }
 
     private int MaxChunk
@@ -94,10 +111,19 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         }
     }
 
-    private async ValueTask<Vxi11WriteResult> DeviceWriteAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async) =>
-        async
-            ? await Client.WriteAsync(data, end, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
-            : Client.Write(data, end, deadline.RemainingMilliseconds);
+    private async ValueTask<Vxi11WriteResult> DeviceWriteAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
+    {
+        try
+        {
+            return async
+                ? await Client.WriteAsync(data, end, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.Write(data, end, deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
+    }
 
     private protected override async ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
     {
@@ -105,7 +131,7 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         {
             if (!end) return;
             var (error, _) = await DeviceWriteAsync(ReadOnlyMemory<byte>.Empty, true, deadline, async).ConfigureAwait(false);
-            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_write");
+            if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_write");
             return;
         }
 
@@ -116,7 +142,7 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
             int n = Math.Min(chunk, data.Length - offset);
             bool last = offset + n >= data.Length;
             var (error, size) = await DeviceWriteAsync(data.Slice(offset, n), last && end, deadline, async).ConfigureAwait(false);
-            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_write");
+            if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_write");
             if (size == 0) deadline.ThrowIfExpired("device_write");
             offset += Math.Min(size, n);
         }
@@ -128,10 +154,19 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         {
             int term = EffectiveTermChar;
             byte? termChar = term >= 0 ? (byte)term : null;
-            var (error, reason, data) = async
-                ? await Client.ReadAsync(target.Length, termChar, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
-                : Client.Read(target.Length, termChar, deadline.RemainingMilliseconds);
-            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_read");
+            Vxi11ReadResult result;
+            try
+            {
+                result = async
+                    ? await Client.ReadAsync(target.Length, termChar, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                    : Client.Read(target.Length, termChar, deadline.RemainingMilliseconds);
+            }
+            catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+            {
+                throw visa;
+            }
+            var (error, reason, data) = result;
+            if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_read");
             int n = Math.Min(data.Length, target.Length);
             data.Span[..n].CopyTo(target.Span);
             bool end = (reason & Vxi11ReadReasons.End) != 0;
@@ -142,27 +177,52 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
 
     private protected override async ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async)
     {
-        var (error, stb) = async
-            ? await Client.ReadStatusByteAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
-            : Client.ReadStatusByte(deadline.RemainingMilliseconds);
-        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_readstb");
+        Vxi11StatusByteResult result;
+        try
+        {
+            result = async
+                ? await Client.ReadStatusByteAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.ReadStatusByte(deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
+        var (error, stb) = result;
+        if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_readstb");
         return stb;
     }
 
     private protected override async ValueTask ClearCoreAsync(Deadline deadline, bool async)
     {
-        var error = async
-            ? await Client.ClearAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
-            : Client.Clear(deadline.RemainingMilliseconds);
-        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_clear");
+        Vxi11Error error;
+        try
+        {
+            error = async
+                ? await Client.ClearAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.Clear(deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
+        if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_clear");
     }
 
     private protected override async ValueTask TriggerCoreAsync(Deadline deadline, bool async)
     {
-        var error = async
-            ? await Client.TriggerAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
-            : Client.Trigger(deadline.RemainingMilliseconds);
-        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_trigger");
+        Vxi11Error error;
+        try
+        {
+            error = async
+                ? await Client.TriggerAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.Trigger(deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
+        if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_trigger");
     }
 
     private protected override async ValueTask ControlRenCoreAsync(RemoteLocalMode mode, Deadline deadline, bool async)
@@ -171,14 +231,22 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
             RemoteLocalMode.AssertAddressLocalLockout;
         int timeout = deadline.RemainingMilliseconds;
         var token = deadline.CancellationToken;
-        var error = (remote, async) switch
+        Vxi11Error error;
+        try
         {
-            (true, true) => await Client.RemoteAsync(timeout, token).ConfigureAwait(false),
-            (true, false) => Client.Remote(timeout),
-            (false, true) => await Client.LocalAsync(timeout, token).ConfigureAwait(false),
-            (false, false) => Client.Local(timeout),
-        };
-        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_remote/local");
+            error = (remote, async) switch
+            {
+                (true, true) => await Client.RemoteAsync(timeout, token).ConfigureAwait(false),
+                (true, false) => Client.Remote(timeout),
+                (false, true) => await Client.LocalAsync(timeout, token).ConfigureAwait(false),
+                (false, false) => Client.Local(timeout),
+            };
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
+        if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_remote/local");
     }
 
     /// <summary>
@@ -206,10 +274,19 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         {
             var session = (TcpipVxi11Session)s;
             int timeout = session.TimeoutMilliseconds;
-            var (error, output) = async
-                ? await session.Client.DoCommandAsync(a.command, a.data, a.dataSize, a.networkOrder, timeout, ct).ConfigureAwait(false)
-                : session.Client.DoCommand(a.command, a.data, a.dataSize, a.networkOrder, timeout);
-            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_docmd");
+            Vxi11DocmdResult result;
+            try
+            {
+                result = async
+                    ? await session.Client.DoCommandAsync(a.command, a.data, a.dataSize, a.networkOrder, timeout, ct).ConfigureAwait(false)
+                    : session.Client.DoCommand(a.command, a.data, a.dataSize, a.networkOrder, timeout);
+            }
+            catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+            {
+                throw visa;
+            }
+            var (error, output) = result;
+            if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_docmd");
             return output;
         }, cancellationToken, async);
 
@@ -221,22 +298,38 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         // The instrument waits for the time this request has left: the caller may have waited for sessions in this
         // process already. A grant that arrives after the caller gave up is released by the client.
         int lockTimeout = timeoutMilliseconds < 0 ? -1 : deadline.RemainingMilliseconds;
-        var error = async
-            ? await Client.LockAsync(lockTimeout, deadline.CancellationToken).ConfigureAwait(false)
-            : Client.Lock(lockTimeout);
+        Vxi11Error error;
+        try
+        {
+            error = async
+                ? await Client.LockAsync(lockTimeout, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.Lock(lockTimeout);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
         if (error == Vxi11Error.DeviceLocked)
             throw new VisaTimeoutException("The device is locked by another VXI-11 link.");
-        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_lock");
+        if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_lock");
     }
 
     private protected override async ValueTask ReleaseDeviceLockAsync(LockType type, CancellationToken cancellationToken, bool async)
     {
         // While closing, destroy_link (or the connection closing) releases the lock.
         if (type != LockType.Exclusive || _client is null || IsDisposed) return;
-        var error = async
-            ? await _client.UnlockAsync(5000, cancellationToken).ConfigureAwait(false)
-            : _client.Unlock(5000);
-        if (error != Vxi11Error.None && error != Vxi11Error.NoLockHeld) throw Vxi11Errors.ToException(error, "device_unlock");
+        Vxi11Error error;
+        try
+        {
+            error = async
+                ? await _client.UnlockAsync(5000, cancellationToken).ConfigureAwait(false)
+                : _client.Unlock(5000);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
+        if (error != Vxi11Error.None && error != Vxi11Error.NoLockHeld) throw LanErrorMapping.FromVxi11(error, "device_unlock");
     }
 
     // VXI-11 service requests arrive as RPC calls from the instrument to an RPC server run by the client.
@@ -264,16 +357,17 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
                     ? await client.CreateInterruptChannelAsync(local, server.Port, deadline.RemainingMilliseconds, cancellationToken).ConfigureAwait(false)
                     : client.CreateInterruptChannel(local, server.Port, deadline.RemainingMilliseconds);
             }
-            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "create_intr_chan");
+            if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "create_intr_chan");
             error = async
                 ? await client.EnableServiceRequestsAsync(true, _srqHandle, deadline.RemainingMilliseconds, cancellationToken).ConfigureAwait(false)
                 : client.EnableServiceRequests(true, _srqHandle, deadline.RemainingMilliseconds);
-            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_enable_srq");
+            if (error != Vxi11Error.None) throw LanErrorMapping.FromVxi11(error, "device_enable_srq");
             _interruptServer = server;
         }
-        catch
+        catch (Exception ex)
         {
             server.Dispose();
+            if (LanErrorMapping.TryMap(ex, out var visa)) throw visa;
             throw;
         }
     }

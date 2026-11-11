@@ -1,58 +1,76 @@
+using System.Net.Sockets;
+using VisaCs.Lan;
+using VisaCs.Lan.Rpc;
+
 namespace VisaCs.Internal;
 
 /// <summary>
-/// Every exception the LAN protocol code creates, in one place. (Socket-level errors come from <see cref="NetUtil"/>.)
-/// The simulator compiles this file too, together with the HiSLIP wire code.
+/// Every exception the LAN protocol code creates, in one place (socket-level errors from <see cref="NetUtil"/> come
+/// through <see cref="SharedErrors"/>, which builds them here too). The simulator compiles this file as well, together
+/// with the HiSLIP wire code.
 /// </summary>
 internal static class LanErrors
 {
-    /// <summary>The operation did not finish in time, or the caller cancelled it (VI_ERROR_TMO).</summary>
-    public static VisaTimeoutException Timeout(string? message = null, Exception? innerException = null, int bytesTransferred = 0) =>
+    /// <summary>The operation did not finish in time, or the caller cancelled it.</summary>
+    public static LanTimeoutException Timeout(string? message = null, Exception? innerException = null, int bytesTransferred = 0) =>
         new(message, innerException) { BytesTransferred = bytesTransferred };
 
-    /// <summary>A protocol error or malformed data (VI_ERROR_IO).</summary>
-    public static VisaException IO(string message, Exception? innerException = null) => new(VisaStatus.ErrorIO, message, innerException);
+    /// <summary>The peer broke the protocol: malformed or unexpected data.</summary>
+    public static LanException Protocol(string message, Exception? innerException = null) =>
+        new(LanError.ProtocolError, message, innerException);
 
-    /// <summary>The connection is closed or broken (VI_ERROR_CONN_LOST).</summary>
-    public static VisaException ConnectionLost(string message, Exception? innerException = null) =>
-        new(VisaStatus.ErrorConnectionLost, message, innerException);
+    /// <summary>The server reported an error.</summary>
+    public static LanException ServerError(string message) => new(LanError.ServerError, message);
 
-    /// <summary>The host, service or RPC program cannot be reached (VI_ERROR_RSRC_NFOUND).</summary>
-    public static VisaException NotFound(string message, Exception? innerException = null) =>
-        new(VisaStatus.ErrorResourceNotFound, message, innerException);
+    /// <summary>The connection is closed or broken.</summary>
+    public static LanException ConnectionLost(string message, Exception? innerException = null) =>
+        new(LanError.ConnectionLost, message, innerException) { NativeError = NativeErrorOf(innerException) };
 
-    /// <summary>The peer or protocol version does not support the operation (VI_ERROR_NSUP_OPER).</summary>
-    public static VisaException NotSupported(string message) => new(VisaStatus.ErrorOperationNotSupported, message);
+    /// <summary>
+    /// The host cannot be resolved or reached: <see cref="LanError.ConnectionRefused"/> when the socket error says
+    /// so, else <see cref="LanError.HostNotFound"/>.
+    /// </summary>
+    public static LanException HostNotFound(string message, Exception? innerException = null) =>
+        new(innerException is SocketException { SocketErrorCode: SocketError.ConnectionRefused } ? LanError.ConnectionRefused : LanError.HostNotFound,
+            message, innerException) { NativeError = NativeErrorOf(innerException) };
 
-    /// <summary>The peer could not decode the request (VI_ERROR_INV_PARAMETER).</summary>
-    public static VisaException InvalidParameter(string message) => new(VisaStatus.ErrorInvalidParameter, message);
+    /// <summary>The host has no such device, sub-address, service or RPC program.</summary>
+    public static LanException DeviceNotFound(string message) => new(LanError.DeviceNotFound, message);
 
-    /// <summary>The resource is locked by another client (VI_ERROR_RSRC_LOCKED).</summary>
-    public static VisaException Locked(string message) => new(VisaStatus.ErrorResourceLocked, message);
+    /// <summary>The peer or protocol version does not support the operation.</summary>
+    public static LanException NotSupported(string message) => new(LanError.NotSupported, message);
 
-    /// <summary>The client holds no lock to release (VI_ERROR_SESN_NLOCKED).</summary>
-    public static VisaException NotLocked(string message) => new(VisaStatus.ErrorSessionNotLocked, message);
+    /// <summary>The resource is locked by another client.</summary>
+    public static LanException Locked(string message) => new(LanError.Locked, message);
 
-    /// <summary>The server is busy and refused the request (VI_ERROR_RSRC_BUSY).</summary>
-    public static VisaException Busy(string message) => new(VisaStatus.ErrorResourceBusy, message);
+    /// <summary>The client holds no lock to release.</summary>
+    public static LanException NotLocked(string message) => new(LanError.NotLocked, message);
 
-    /// <summary>The exception for a VXI-11 error code, with the VISA status that matches it.</summary>
-    public static VisaException Vxi11(VisaCs.Lan.Vxi11Error error, string message) => error switch
+    /// <summary>The server is busy and refused the request.</summary>
+    public static LanException Busy(string message) => new(LanError.Busy, message);
+
+    /// <summary>An OS call failed unexpectedly with <paramref name="errno"/>.</summary>
+    public static LanException SystemError(string message, int errno) => new(LanError.SystemError, message) { NativeError = errno };
+
+    /// <summary>
+    /// The exception for a VXI-11 error code: <see cref="LanTimeoutException"/> for <see cref="Vxi11Error.IOTimeout"/>
+    /// (with the <see cref="Vxi11Exception"/> as its inner exception), otherwise <see cref="Vxi11Exception"/>.
+    /// </summary>
+    public static Exception Vxi11(Vxi11Error error, string message)
     {
-        VisaCs.Lan.Vxi11Error.IOTimeout => new VisaTimeoutException(message),
-        VisaCs.Lan.Vxi11Error.DeviceLocked => new VisaException(VisaStatus.ErrorResourceLocked, message),
-        VisaCs.Lan.Vxi11Error.NoLockHeld => new VisaException(VisaStatus.ErrorSessionNotLocked, message),
-        VisaCs.Lan.Vxi11Error.Abort => new VisaException(VisaStatus.ErrorAbort, message),
-        VisaCs.Lan.Vxi11Error.OperationNotSupported => new VisaException(VisaStatus.ErrorOperationNotSupported, message),
-        VisaCs.Lan.Vxi11Error.InvalidLinkIdentifier or VisaCs.Lan.Vxi11Error.ChannelNotEstablished =>
-            new VisaException(VisaStatus.ErrorConnectionLost, message),
-        VisaCs.Lan.Vxi11Error.DeviceNotAccessible or VisaCs.Lan.Vxi11Error.InvalidAddress => new VisaException(VisaStatus.ErrorResourceNotFound, message),
-        VisaCs.Lan.Vxi11Error.Parameter or VisaCs.Lan.Vxi11Error.Syntax => new VisaException(VisaStatus.ErrorInvalidParameter, message),
-        VisaCs.Lan.Vxi11Error.OutOfResources => new VisaException(VisaStatus.ErrorAllocation, message),
-        _ => new VisaException(VisaStatus.ErrorIO, message),
-    };
+        var vxi11 = new Vxi11Exception(error, message);
+        return error == Vxi11Error.IOTimeout ? Timeout(message, vxi11) : vxi11;
+    }
 
-    /// <summary>A secure connection (TLS or authentication) failed or the policy forbids it (VI_ERROR_NPERMISSION).</summary>
-    public static VisaSecurityException Security(SecurityFailure failure, string message, Exception? innerException = null) =>
+    /// <summary>An RPC call was not accepted.</summary>
+    public static RpcException Rpc(RpcAcceptStatus status, string message) => new(status, message);
+
+    /// <summary>A secure connection (TLS or authentication) failed or the policy forbids it.</summary>
+    public static LanSecurityException Security(LanSecurityFailure failure, string message, Exception? innerException = null) =>
         new(failure, message, innerException);
+
+    /// <summary>True for the exceptions of this library (and the simulator's copy of the LAN code).</summary>
+    public static bool IsLanError(Exception ex) => ex is LanException or LanTimeoutException;
+
+    private static int? NativeErrorOf(Exception? ex) => ex is SocketException se ? se.NativeErrorCode : null;
 }

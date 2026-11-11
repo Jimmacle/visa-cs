@@ -3,7 +3,7 @@ using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 
-namespace VisaCs;
+namespace VisaCs.Lan;
 
 /// <summary>When a HiSLIP session encrypts its connection (HiSLIP 2.0 secure connections).</summary>
 public enum HislipEncryptionMode

@@ -124,10 +124,17 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
         Port = Name.HislipPort ?? ResourceManager.Options.HislipPort;
         ulong maximumMessageSize = (ulong)MaximumMessageKB * 1024;
         var security = ResourceManager.Options.HislipSecurity;
-        _client = async
-            ? await HislipClient.ConnectAsync(Name.Host, Port, Name.HislipSubAddress, connectTimeoutMs, security, maximumMessageSize,
-                cancellationToken).ConfigureAwait(false)
-            : HislipClient.Connect(Name.Host, Port, Name.HislipSubAddress, connectTimeoutMs, security, maximumMessageSize);
+        try
+        {
+            _client = async
+                ? await HislipClient.ConnectAsync(Name.Host, Port, Name.HislipSubAddress, connectTimeoutMs, security, maximumMessageSize,
+                    cancellationToken).ConfigureAwait(false)
+                : HislipClient.Connect(Name.Host, Port, Name.HislipSubAddress, connectTimeoutMs, security, maximumMessageSize);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
         _client.ServiceRequest += stb => RaiseEvent(new ServiceRequestEventArgs(stb));
         Address = _client.RemoteAddress.ToString();
     }
@@ -138,21 +145,34 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
         return default;
     }
 
-    private protected override ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
+    private protected override async ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
     {
         // In synchronized mode, unread response data becomes stale once a new message is sent.
         if (!Client.OverlapMode) DiscardInputBuffer();
-        if (async) return Client.WriteAsync(data, end, deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Client.Write(data, end, deadline.RemainingMilliseconds);
-        return default;
+        try
+        {
+            if (async) await Client.WriteAsync(data, end, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
+            else Client.Write(data, end, deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
     private protected override async ValueTask<FillResult> FillCoreAsync(Memory<byte> target, Deadline deadline, bool async)
     {
-        var (count, end) = async
-            ? await Client.ReadAsync(target, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
-            : Client.Read(target, deadline.RemainingMilliseconds);
-        return new FillResult(count, end);
+        try
+        {
+            var (count, end) = async
+                ? await Client.ReadAsync(target, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.Read(target, deadline.RemainingMilliseconds);
+            return new FillResult(count, end);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
     private protected override void OnReadCompleted(ReadStatus status)
@@ -160,54 +180,94 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
         if (status == ReadStatus.EndReceived) Client.MarkResponseDelivered();
     }
 
-    private protected override ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async) =>
-        async
-            ? Client.ReadStatusByteAsync(deadline.RemainingMilliseconds, deadline.CancellationToken)
-            : new(Client.ReadStatusByte(deadline.RemainingMilliseconds));
-
-    private ValueTask DeviceClearAsync(bool? requestOverlap, Deadline deadline, bool async)
+    private protected override async ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async)
     {
-        if (async) return Client.DeviceClearAsync(deadline.RemainingMilliseconds, requestOverlap, deadline.CancellationToken);
-        Client.DeviceClear(deadline.RemainingMilliseconds, requestOverlap);
-        return default;
+        try
+        {
+            return async
+                ? await Client.ReadStatusByteAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.ReadStatusByte(deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
+    }
+
+    private async ValueTask DeviceClearAsync(bool? requestOverlap, Deadline deadline, bool async)
+    {
+        try
+        {
+            if (async) await Client.DeviceClearAsync(deadline.RemainingMilliseconds, requestOverlap, deadline.CancellationToken).ConfigureAwait(false);
+            else Client.DeviceClear(deadline.RemainingMilliseconds, requestOverlap);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
     private protected override ValueTask ClearCoreAsync(Deadline deadline, bool async) => DeviceClearAsync(null, deadline, async);
 
-    private protected override ValueTask TriggerCoreAsync(Deadline deadline, bool async)
+    private protected override async ValueTask TriggerCoreAsync(Deadline deadline, bool async)
     {
         if (!Client.OverlapMode) DiscardInputBuffer();
-        if (async) return Client.TriggerAsync(deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Client.Trigger(deadline.RemainingMilliseconds);
-        return default;
+        try
+        {
+            if (async) await Client.TriggerAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
+            else Client.Trigger(deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
-    private protected override ValueTask ControlRenCoreAsync(RemoteLocalMode mode, Deadline deadline, bool async)
+    private protected override async ValueTask ControlRenCoreAsync(RemoteLocalMode mode, Deadline deadline, bool async)
     {
         // HiSLIP's remote/local control codes are VISA's VI_GPIB_REN_* values.
         var control = (HislipRemoteLocalMode)mode;
-        if (async) return Client.RemoteLocalAsync(control, deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Client.RemoteLocal(control, deadline.RemainingMilliseconds);
-        return default;
+        try
+        {
+            if (async) await Client.RemoteLocalAsync(control, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
+            else Client.RemoteLocal(control, deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
-    private protected override ValueTask AcquireDeviceLockAsync(LockType type, string? key, int timeoutMilliseconds, Deadline deadline, bool async)
+    private protected override async ValueTask AcquireDeviceLockAsync(LockType type, string? key, int timeoutMilliseconds, Deadline deadline,
+        bool async)
     {
         // The server waits for the time this request has left: the caller may have waited for sessions in this process.
         string? sharedKey = type == LockType.Exclusive ? null : key ?? "";
         int timeout = timeoutMilliseconds < 0 ? -1 : deadline.RemainingMilliseconds;
-        if (async) return Client.LockAsync(sharedKey, timeout, deadline.CancellationToken);
-        Client.Lock(sharedKey, timeout);
-        return default;
+        try
+        {
+            if (async) await Client.LockAsync(sharedKey, timeout, deadline.CancellationToken).ConfigureAwait(false);
+            else Client.Lock(sharedKey, timeout);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
-    private protected override ValueTask ReleaseDeviceLockAsync(LockType type, CancellationToken cancellationToken, bool async)
+    private protected override async ValueTask ReleaseDeviceLockAsync(LockType type, CancellationToken cancellationToken, bool async)
     {
         // While closing, closing the connection releases the server's locks.
-        if (_client is null || _client.IsClosed || IsDisposed) return default;
-        if (async) return _client.UnlockAsync(5000, cancellationToken);
-        _client.Unlock(5000);
-        return default;
+        if (_client is null || _client.IsClosed || IsDisposed) return;
+        try
+        {
+            if (async) await _client.UnlockAsync(5000, cancellationToken).ConfigureAwait(false);
+            else _client.Unlock(5000);
+        }
+        catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+        {
+            throw visa;
+        }
     }
 
     // ------------------------------------------------------------------ HiSLIP 2.0 security
@@ -251,20 +311,27 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
             session.DiscardInputBuffer();
             int timeout = session.TimeoutMilliseconds;
             var security = session.ResourceManager.Options.HislipSecurity;
-            switch (enabled, async)
+            try
             {
-                case (true, true):
-                    await client.EstablishSecureConnectionAsync(security, timeout, ct).ConfigureAwait(false);
-                    break;
-                case (true, false):
-                    client.EstablishSecureConnection(security, timeout);
-                    break;
-                case (false, true):
-                    await client.EndSecureConnectionAsync(timeout, ct).ConfigureAwait(false);
-                    break;
-                default:
-                    client.EndSecureConnection(timeout);
-                    break;
+                switch (enabled, async)
+                {
+                    case (true, true):
+                        await client.EstablishSecureConnectionAsync(security, timeout, ct).ConfigureAwait(false);
+                        break;
+                    case (true, false):
+                        client.EstablishSecureConnection(security, timeout);
+                        break;
+                    case (false, true):
+                        await client.EndSecureConnectionAsync(timeout, ct).ConfigureAwait(false);
+                        break;
+                    default:
+                        client.EndSecureConnection(timeout);
+                        break;
+                }
+            }
+            catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+            {
+                throw visa;
             }
             return true;
         }, cancellationToken, async).ConfigureAwait(false);
@@ -291,10 +358,10 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
         GetDescriptorsAsync(cancellationToken, async: true).AsTask();
 
     private ValueTask<IReadOnlyList<HislipDescriptor>> GetDescriptorsAsync(CancellationToken cancellationToken, bool async) =>
-        RunAsyncChannelAsync(0, static (session, _, deadline, async) =>
+        RunAsyncChannelAsync(0, static async (session, _, deadline, async) =>
             async
-                ? session.Client.GetDescriptorsAsync(deadline.RemainingMilliseconds, deadline.CancellationToken)
-                : new(session.Client.GetDescriptors(deadline.RemainingMilliseconds)), cancellationToken, async);
+                ? await session.Client.GetDescriptorsAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : session.Client.GetDescriptors(deadline.RemainingMilliseconds), cancellationToken, async);
 
     /// <summary>
     /// Queries the server's lock state (AsyncLockInfo): whether any client holds the exclusive lock, and how many
@@ -318,12 +385,21 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
 
     /// <summary>
     /// Runs an asynchronous-channel request outside the session's I/O gate (it may run while a read or write is in
-    /// progress), with the session timeout and the usual error mapping.
+    /// progress), with the session timeout and the usual error mapping (LAN exceptions become VISA exceptions).
     /// </summary>
     private ValueTask<TResult> RunAsyncChannelAsync<TState, TResult>(TState state,
         Func<TcpipHislipSession, TState, Deadline, bool, ValueTask<TResult>> operation, CancellationToken cancellationToken, bool async) =>
-        RunAsync((operation, state), static (s, a, token, async) =>
-            a.operation((TcpipHislipSession)s, a.state, ((TcpipHislipSession)s).NewDeadline(token), async), cancellationToken, async);
+        RunAsync((operation, state), static async (s, a, token, async) =>
+        {
+            try
+            {
+                return await a.operation((TcpipHislipSession)s, a.state, ((TcpipHislipSession)s).NewDeadline(token), async).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (LanErrorMapping.TryMap(ex, out var visa))
+            {
+                throw visa;
+            }
+        }, cancellationToken, async);
 
     private static bool IsPerpetual(DateTime notAfter) => notAfter.ToUniversalTime() >= new DateTime(9999, 12, 31, 23, 59, 59, DateTimeKind.Utc);
 

@@ -33,7 +33,7 @@ internal static class SemaphoreDeadlineExtensions
         }
     }
 
-    /// <summary>Enters the gate or throws <see cref="VisaTimeoutException"/> with <paramref name="what"/> in the message.</summary>
+    /// <summary>Enters the gate or throws <see cref="VisaCs.Lan.LanTimeoutException"/> with <paramref name="what"/> in the message.</summary>
     public static async ValueTask EnterOrThrowAsync(this SemaphoreSlim gate, Deadline deadline, bool async, string what)
     {
         if (!await gate.EnterAsync(deadline, async).ConfigureAwait(false))

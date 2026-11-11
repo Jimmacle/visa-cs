@@ -115,15 +115,15 @@ internal sealed class ScramSha256ClientMechanism : ISaslClientMechanism
         string serverFirst = Encoding.UTF8.GetString(challenge);
         var fields = ScramFields.Parse(serverFirst);
         if (fields.TryGetValue('e', out var error))
-            throw LanErrors.Security(SecurityFailure.Authentication, $"SCRAM error from the server: {error}");
+            throw LanErrors.Security(LanSecurityFailure.Authentication, $"SCRAM error from the server: {error}");
         if (fields.ContainsKey('m'))
-            throw LanErrors.Security(SecurityFailure.Authentication, "The SCRAM server-first message requires an unsupported extension.");
+            throw LanErrors.Security(LanSecurityFailure.Authentication, "The SCRAM server-first message requires an unsupported extension.");
         if (!fields.TryGetValue('r', out var nonce) || nonce.Length <= _clientNonce.Length || !nonce.StartsWith(_clientNonce, StringComparison.Ordinal) ||
             !fields.TryGetValue('s', out var saltText) || !fields.TryGetValue('i', out var iterationText) ||
             !int.TryParse(iterationText, out int iterations) || iterations < 1)
-            throw LanErrors.Security(SecurityFailure.Authentication, "Invalid SCRAM server-first message.");
+            throw LanErrors.Security(LanSecurityFailure.Authentication, "Invalid SCRAM server-first message.");
         if (iterations > MaxIterations)
-            throw LanErrors.Security(SecurityFailure.Authentication,
+            throw LanErrors.Security(LanSecurityFailure.Authentication,
                 $"The server asks for {iterations} SCRAM iterations; at most {MaxIterations} are accepted.");
         byte[] salt;
         try
@@ -132,7 +132,7 @@ internal sealed class ScramSha256ClientMechanism : ISaslClientMechanism
         }
         catch (FormatException ex)
         {
-            throw LanErrors.Security(SecurityFailure.Authentication, "Invalid SCRAM server-first message (salt).", ex);
+            throw LanErrors.Security(LanSecurityFailure.Authentication, "Invalid SCRAM server-first message (salt).", ex);
         }
 
         byte[] salted = Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(Sasl.Prepare(_password)), salt, iterations, HashAlgorithmName.SHA256, 32);

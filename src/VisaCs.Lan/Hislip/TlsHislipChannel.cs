@@ -60,9 +60,9 @@ internal sealed class TlsHislipChannel : HislipChannel
         _ssl.RemoteCertificate is null ? null : _ssl.RemoteCertificate as X509Certificate2 ?? new X509Certificate2(_ssl.RemoteCertificate);
 
     /// <summary>
-    /// Performs the client handshake on <paramref name="socket"/>. Failures throw <see cref="VisaSecurityException"/>
-    /// (<see cref="SecurityFailure.ServerCertificate"/> when the certificate check rejected the server, else
-    /// <see cref="SecurityFailure.TlsNegotiation"/>); a timeout throws <see cref="VisaTimeoutException"/>.
+    /// Performs the client handshake on <paramref name="socket"/>. Failures throw <see cref="LanSecurityException"/>
+    /// (<see cref="LanSecurityFailure.ServerCertificate"/> when the certificate check rejected the server, else
+    /// <see cref="LanSecurityFailure.TlsNegotiation"/>); a timeout throws <see cref="LanTimeoutException"/>.
     /// </summary>
     public static async ValueTask<TlsHislipChannel> AuthenticateAsClientAsync(Socket socket, SslClientAuthenticationOptions options,
         Deadline deadline, bool async)
@@ -106,7 +106,7 @@ internal sealed class TlsHislipChannel : HislipChannel
             await NetUtil.AwaitBoundedAsync(task, deadline, cts, async).ConfigureAwait(false);
             return new TlsHislipChannel(socket, ssl, records);
         }
-        catch (Exception ex) when (ex is not VisaException)
+        catch (Exception ex) when (!LanErrors.IsLanError(ex))
         {
             // A synchronous caller may have stopped waiting while the handshake still runs: let it see the cancellation
             // before the stream goes away.
@@ -119,8 +119,8 @@ internal sealed class TlsHislipChannel : HislipChannel
             if (ex is OperationCanceledException)
                 throw LanErrors.Timeout("The TLS handshake timed out.", ex);
             if (serverCertificateRejected())
-                throw LanErrors.Security(SecurityFailure.ServerCertificate, $"The server certificate was not trusted: {ex.Message}", ex);
-            throw LanErrors.Security(SecurityFailure.TlsNegotiation, $"TLS handshake failed: {ex.Message}", ex);
+                throw LanErrors.Security(LanSecurityFailure.ServerCertificate, $"The server certificate was not trusted: {ex.Message}", ex);
+            throw LanErrors.Security(LanSecurityFailure.TlsNegotiation, $"TLS handshake failed: {ex.Message}", ex);
         }
     }
 
@@ -224,7 +224,7 @@ internal sealed class TlsHislipChannel : HislipChannel
                 write = _ssl.WriteAsync(data, cts?.Token ?? default).AsTask();
                 await NetUtil.AwaitBoundedAsync(write, deadline, cts, async).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not VisaException)
+            catch (Exception ex) when (!LanErrors.IsLanError(ex))
             {
                 // The caller may reuse the buffer once this returns: let a cancelled write finish first.
                 if (write is { IsCompleted: false })
@@ -250,7 +250,7 @@ internal sealed class TlsHislipChannel : HislipChannel
 
     /// <summary>
     /// Ends TLS on this connection (close_notify in both directions) and returns the socket as a plain channel. This
-    /// channel must not be used afterwards. Fails with VI_ERROR_IO if decrypted data was still unread.
+    /// channel must not be used afterwards. Fails with <see cref="VisaCs.Lan.LanError.ProtocolError"/> if decrypted data was still unread.
     /// </summary>
     public async ValueTask<PlainHislipChannel> EndTlsAsync(Deadline deadline, bool async)
     {
@@ -283,7 +283,7 @@ internal sealed class TlsHislipChannel : HislipChannel
                     done = shutdown.Wait(deadline.RemainingMilliseconds);
                 }
             }
-            catch (Exception ex) when (ex is not VisaException)
+            catch (Exception ex) when (!LanErrors.IsLanError(ex))
             {
                 var inner = (ex as AggregateException)?.InnerException ?? ex;
                 throw LanErrors.ConnectionLost($"Ending TLS failed: {inner.Message}", inner);
@@ -306,7 +306,7 @@ internal sealed class TlsHislipChannel : HislipChannel
             {
                 if (_eof)
                 {
-                    if (_buffered > 0) throw LanErrors.IO("Data was pending when TLS ended.");
+                    if (_buffered > 0) throw LanErrors.Protocol("Data was pending when TLS ended.");
                     break;
                 }
                 if (_fault is not null)

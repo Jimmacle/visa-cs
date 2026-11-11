@@ -57,15 +57,37 @@ public sealed class ClientTests(SimulatorFixture fixture) : IClassFixture<Simula
     }
 
     [Fact]
-    public void Vxi11ErrorsMapToVisaExceptions()
+    public void Vxi11ErrorsBecomeLanExceptions()
     {
-        Assert.IsType<VisaTimeoutException>(Vxi11Errors.ToException(Vxi11Error.IOTimeout, "device_read"));
-        var locked = Vxi11Errors.ToException(Vxi11Error.DeviceLocked, "device_write");
-        Assert.Equal(VisaStatus.ErrorResourceLocked, locked.Status);
+        var timeout = Assert.IsType<LanTimeoutException>(Vxi11Errors.ToException(Vxi11Error.IOTimeout, "device_read"));
+        Assert.Equal(Vxi11Error.IOTimeout, Assert.IsType<Vxi11Exception>(timeout.InnerException).Code);
+        var locked = Assert.IsType<Vxi11Exception>(Vxi11Errors.ToException(Vxi11Error.DeviceLocked, "device_write"));
+        Assert.Equal(Vxi11Error.DeviceLocked, locked.Code);
+        Assert.Equal(LanError.Locked, locked.Error);
+        Assert.IsAssignableFrom<IOException>(locked);
         Assert.Contains("device locked by another link", locked.Message);
-        var ex = Assert.Throws<VisaException>(() =>
+        var ex = Assert.Throws<Vxi11Exception>(() =>
             Vxi11Client.Connect("127.0.0.1", "nosuchdevice", Timeout, fixture.Simulator.Vxi11.PortmapperPort));
-        Assert.Equal(VisaStatus.ErrorResourceNotFound, ex.Status);
+        Assert.Equal(LanError.DeviceNotFound, ex.Error);
+    }
+
+    [Fact]
+    public void ConnectFailuresNameTheCause()
+    {
+        // Nothing listens on port 1 of the loopback address.
+        var refused = Assert.Throws<LanException>(() => VicpClient.Connect("127.0.0.1", Timeout, port: 1));
+        Assert.Equal(LanError.ConnectionRefused, refused.Error);
+        Assert.NotNull(refused.NativeError);
+    }
+
+    [Fact]
+    public void ZeroTimeoutDoesNotWait()
+    {
+        using var client = HislipClient.Connect("127.0.0.1", fixture.Simulator.Hislip.Port, "hislip0", Timeout);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var ex = Assert.Throws<LanTimeoutException>(() => client.Read(new byte[16], 0));
+        Assert.Equal(0, ex.BytesTransferred);
+        Assert.True(started.ElapsedMilliseconds < 1000, $"took {started.ElapsedMilliseconds} ms");
     }
 
     // ------------------------------------------------------------------ HiSLIP
@@ -102,7 +124,7 @@ public sealed class ClientTests(SimulatorFixture fixture) : IClassFixture<Simula
     {
         using var client = HislipClient.Connect("127.0.0.1", fixture.Simulator.Hislip.Port, "hislip0", Timeout);
         var buffer = new byte[16];
-        Assert.Throws<VisaTimeoutException>(() => client.Read(buffer, 100));
+        Assert.Throws<LanTimeoutException>(() => client.Read(buffer, 100));
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         Assert.ThrowsAny<OperationCanceledException>(() => client.ReadAsync(buffer, Timeout, cts.Token).AsTask().GetAwaiter().GetResult());
@@ -148,8 +170,12 @@ public sealed class ClientTests(SimulatorFixture fixture) : IClassFixture<Simula
         var reply = await client.CallAsync(1, w => w.WriteString("hello"), Timeout);
         Assert.Equal("HELLO", reply.ReadString());
         Assert.Equal(0, client.Call(0, null, Timeout).Remaining); // the null procedure
-        Assert.Equal(VisaStatus.ErrorOperationNotSupported, Assert.Throws<VisaException>(() => client.Call(7, null, Timeout)).Status);
-        Assert.Equal(VisaStatus.ErrorInvalidParameter, Assert.Throws<VisaException>(() => client.Call(1, null, Timeout)).Status);
+        var unavailable = Assert.Throws<RpcException>(() => client.Call(7, null, Timeout));
+        Assert.Equal(RpcAcceptStatus.ProcedureUnavailable, unavailable.AcceptStatus);
+        Assert.Equal(LanError.NotSupported, unavailable.Error);
+        var garbage = Assert.Throws<RpcException>(() => client.Call(1, null, Timeout));
+        Assert.Equal(RpcAcceptStatus.GarbageArguments, garbage.AcceptStatus);
+        Assert.Equal(LanError.InvalidRequest, garbage.Error);
     }
 
     [Fact]
@@ -157,8 +183,8 @@ public sealed class ClientTests(SimulatorFixture fixture) : IClassFixture<Simula
     {
         int port = Portmapper.GetPort("127.0.0.1", Vxi11Protocol.CoreProgram, Vxi11Protocol.Version, Timeout, fixture.Simulator.Vxi11.PortmapperPort);
         Assert.Equal(fixture.Simulator.Vxi11.CorePort, port);
-        Assert.Equal(VisaStatus.ErrorResourceNotFound, Assert.Throws<VisaException>(() =>
-            Portmapper.GetPort("127.0.0.1", 0x20000098, 1, Timeout, fixture.Simulator.Vxi11.PortmapperPort)).Status);
+        Assert.Equal(LanError.DeviceNotFound, Assert.Throws<LanException>(() =>
+            Portmapper.GetPort("127.0.0.1", 0x20000098, 1, Timeout, fixture.Simulator.Vxi11.PortmapperPort)).Error);
     }
 
     [Fact]

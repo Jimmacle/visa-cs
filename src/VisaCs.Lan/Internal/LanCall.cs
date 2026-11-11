@@ -17,7 +17,7 @@ internal static class LanCall
         {
             await task.ConfigureAwait(false);
         }
-        catch (Exception ex) when (cancellationToken.IsCancellationRequested && ex is VisaException or OperationCanceledException)
+        catch (Exception ex) when (cancellationToken.IsCancellationRequested && (LanErrors.IsLanError(ex) || ex is OperationCanceledException))
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
@@ -30,7 +30,7 @@ internal static class LanCall
         {
             return await task.ConfigureAwait(false);
         }
-        catch (Exception ex) when (cancellationToken.IsCancellationRequested && ex is VisaException or OperationCanceledException)
+        catch (Exception ex) when (cancellationToken.IsCancellationRequested && (LanErrors.IsLanError(ex) || ex is OperationCanceledException))
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }

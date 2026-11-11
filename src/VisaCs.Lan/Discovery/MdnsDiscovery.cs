@@ -42,25 +42,26 @@ public static class MdnsDiscovery
 
     /// <summary>
     /// Sends one query for the given service types (see <see cref="MdnsServiceTypes"/>) and collects the answers for
-    /// <paramref name="timeoutMs"/> milliseconds. <paramref name="target"/> overrides the multicast destination (for
+    /// <paramref name="timeoutMilliseconds"/> milliseconds (negative: until cancelled; 0: only answers already
+    /// received). <paramref name="target"/> overrides the multicast destination (for
     /// example a unicast responder in a test).
     /// </summary>
-    public static IReadOnlyList<MdnsServiceInstance> Browse(IReadOnlyList<string> serviceTypes, int timeoutMs, IPEndPoint? target = null) =>
-        AsyncIO.Complete(BrowseAsync(serviceTypes, timeoutMs, target, CancellationToken.None, async: false));
+    public static IReadOnlyList<MdnsServiceInstance> Browse(IReadOnlyList<string> serviceTypes, int timeoutMilliseconds, IPEndPoint? target = null) =>
+        AsyncIO.Complete(BrowseAsync(serviceTypes, timeoutMilliseconds, target, CancellationToken.None, async: false));
 
     /// <summary>
     /// Like <see cref="Browse"/>, without holding a thread while waiting for answers. Cancelling
     /// <paramref name="cancellationToken"/> ends the wait early with <see cref="OperationCanceledException"/>.
     /// </summary>
-    public static async Task<IReadOnlyList<MdnsServiceInstance>> BrowseAsync(IReadOnlyList<string> serviceTypes, int timeoutMs,
+    public static async Task<IReadOnlyList<MdnsServiceInstance>> BrowseAsync(IReadOnlyList<string> serviceTypes, int timeoutMilliseconds,
         IPEndPoint? target = null, CancellationToken cancellationToken = default)
     {
-        var result = await BrowseAsync(serviceTypes, timeoutMs, target, cancellationToken, async: true).ConfigureAwait(false);
+        var result = await BrowseAsync(serviceTypes, timeoutMilliseconds, target, cancellationToken, async: true).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         return result;
     }
 
-    private static async ValueTask<IReadOnlyList<MdnsServiceInstance>> BrowseAsync(IReadOnlyList<string> serviceTypes, int timeoutMs,
+    private static async ValueTask<IReadOnlyList<MdnsServiceInstance>> BrowseAsync(IReadOnlyList<string> serviceTypes, int timeoutMilliseconds,
         IPEndPoint? target, CancellationToken cancellationToken, bool async)
     {
         ArgumentNullException.ThrowIfNull(serviceTypes);
@@ -97,7 +98,7 @@ public static class MdnsDiscovery
             }
 
             var records = new List<Record>();
-            var deadline = Deadline.FromMilliseconds(timeoutMs).WithCancellation(cancellationToken);
+            var deadline = Deadline.FromMilliseconds(timeoutMilliseconds).WithCancellation(cancellationToken);
             if (async)
             {
                 // One receive loop per interface socket; all of them end when the deadline passes.

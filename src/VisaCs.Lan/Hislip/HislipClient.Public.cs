@@ -119,7 +119,7 @@ public sealed partial class HislipClient
     /// <summary>
     /// Requests the exclusive lock (<paramref name="sharedLockKey"/> null or empty) or a shared lock with that key. The
     /// server waits up to <paramref name="timeoutMilliseconds"/> (-1: no limit); a lock it cannot grant in time throws
-    /// <see cref="VisaTimeoutException"/>. A lock granted after the request was abandoned is released again.
+    /// <see cref="LanTimeoutException"/>. A lock granted after the request was abandoned is released again.
     /// </summary>
     public void Lock(string? sharedLockKey, int timeoutMilliseconds) =>
         AsyncIO.Complete(LockCoreAsync(sharedLockKey ?? "", timeoutMilliseconds, Deadline.FromMilliseconds(timeoutMilliseconds), async: false));
@@ -129,7 +129,7 @@ public sealed partial class HislipClient
         LanCall.RunAsync(LockCoreAsync(sharedLockKey ?? "", timeoutMilliseconds, LanCall.DeadlineFor(timeoutMilliseconds, cancellationToken),
             async: true), cancellationToken);
 
-    /// <summary>Releases this client's lock (VI_ERROR_SESN_NLOCKED when it holds none).</summary>
+    /// <summary>Releases this client's lock (<see cref="LanError.NotLocked"/> when it holds none).</summary>
     public void Unlock(int timeoutMilliseconds) => AsyncIO.Complete(UnlockCoreAsync(Deadline.FromMilliseconds(timeoutMilliseconds), async: false));
 
     /// <summary>Releases this client's lock.</summary>
@@ -144,7 +144,7 @@ public sealed partial class HislipClient
     public ValueTask<HislipLockInfo> GetLockInfoAsync(int timeoutMilliseconds, CancellationToken cancellationToken = default) =>
         LanCall.RunAsync(LockInfoCoreAsync(LanCall.DeadlineFor(timeoutMilliseconds, cancellationToken), async: true), cancellationToken);
 
-    /// <summary>Reads the server's HiSLIP 2.0 descriptors (VI_ERROR_NSUP_OPER with a HiSLIP 1.0 server).</summary>
+    /// <summary>Reads the server's HiSLIP 2.0 descriptors (<see cref="LanError.NotSupported"/> with a HiSLIP 1.0 server).</summary>
     public IReadOnlyList<HislipDescriptor> GetDescriptors(int timeoutMilliseconds) =>
         AsyncIO.Complete(GetDescriptorsCoreAsync(Deadline.FromMilliseconds(timeoutMilliseconds), async: false));
 
@@ -167,7 +167,7 @@ public sealed partial class HislipClient
     /// <summary>
     /// Starts encryption on the open connection (HiSLIP 2.0 Establish Secure Connection: TLS on both channels, then SASL
     /// authentication), whatever the <see cref="HislipSecurityOptions.Encryption"/> mode. Does nothing when already
-    /// encrypted. VI_ERROR_RSRC_BUSY (unread data on the server) changes nothing; any other failure, including a timeout
+    /// encrypted. <see cref="LanError.Busy"/> (unread data on the server) changes nothing; any other failure, including a timeout
     /// or cancellation, closes the connection.
     /// </summary>
     public void EstablishSecureConnection(HislipSecurityOptions security, int timeoutMilliseconds) =>
@@ -181,7 +181,7 @@ public sealed partial class HislipClient
 
     /// <summary>
     /// Ends encryption (End Secure Connection), allowed only when the server does not make it mandatory. Does nothing
-    /// when not encrypted. Failures other than VI_ERROR_RSRC_BUSY close the connection.
+    /// when not encrypted. Failures other than <see cref="LanError.Busy"/> close the connection.
     /// </summary>
     public void EndSecureConnection(int timeoutMilliseconds) =>
         AsyncIO.Complete(EndSecureConnectionCoreAsync(Deadline.FromMilliseconds(timeoutMilliseconds), async: false));

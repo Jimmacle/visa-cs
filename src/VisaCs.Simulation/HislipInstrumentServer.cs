@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using VisaCs.Internal;
+using VisaCs.Lan;
 using VisaCs.Lan.Protocols;
 
 namespace VisaCs.Simulation;

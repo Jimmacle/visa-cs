@@ -82,8 +82,8 @@ public sealed class XdrWriter
 }
 
 /// <summary>
-/// XDR (RFC 4506) decoder over a byte array segment. Reading past the end throws <see cref="VisaException"/>
-/// (VI_ERROR_IO).
+/// XDR (RFC 4506) decoder over a byte array segment. Reading past the end throws <see cref="LanException"/>
+/// (<see cref="LanError.ProtocolError"/>).
 /// </summary>
 public sealed class XdrReader
 {
@@ -109,7 +109,7 @@ public sealed class XdrReader
     private void Require(long count)
     {
         if (count < 0 || count > _end - _position)
-            throw LanErrors.IO("Malformed XDR data: unexpected end of message.");
+            throw LanErrors.Protocol("Malformed XDR data: unexpected end of message.");
     }
 
     /// <summary>Reads an unsigned 32-bit integer.</summary>
@@ -158,7 +158,7 @@ public sealed class XdrReader
     public ReadOnlyMemory<byte> ReadOpaqueMemory()
     {
         uint length = ReadUInt32();
-        if (length > int.MaxValue) throw LanErrors.IO("Malformed XDR data: invalid length.");
+        if (length > int.MaxValue) throw LanErrors.Protocol("Malformed XDR data: invalid length.");
         return ReadFixedOpaqueMemory((int)length);
     }
 

@@ -68,9 +68,12 @@ Console.WriteLine($"HiSLIP {s.ProtocolVersion >> 8}.{s.ProtocolVersion & 0xFF}, 
 ### HiSLIP 2.0 secure connections
 
 HiSLIP 2.0 (IVI-6.1) and IVI-6.5 add TLS encryption and SASL client authentication on the same port. VisaCs
-implements both. Configure them on `ResourceManagerOptions.HislipSecurity`:
+implements both. Configure them on `ResourceManagerOptions.HislipSecurity` (the option types are in the
+`VisaCs.Lan` namespace):
 
 ```csharp
+using VisaCs.Lan; // HislipSecurityOptions, HislipEncryptionMode
+
 var options = new ResourceManagerOptions();
 options.HislipSecurity.Encryption = HislipEncryptionMode.Required;
 options.HislipSecurity.Credentials = new NetworkCredential("operator", "secret");
@@ -205,15 +208,13 @@ instance name as the description.
 
 The protocols are in the `VisaCs.Lan` library and work on their own: `Vxi11Client`, `HislipClient`, `VicpClient`,
 ONC RPC (`VisaCs.Lan.Rpc`: `RpcTcpClient`, `RpcTcpServer`, `XdrWriter`, `XdrReader`, `Portmapper`) and discovery
-(`MdnsDiscovery`, `Vxi11Discovery`). The VISA sessions above are thin adapters over these clients. The library's
-types are in the `VisaCs.Lan` namespace, except `HislipSecurityOptions`, `HislipEncryptionMode` and
-`HislipDescriptor`, which stay in `VisaCs`; the exceptions (`VisaException`, `VisaTimeoutException`,
-`VisaSecurityException`) and `VisaStatus` come from `VisaCs.Primitives`.
+(`MdnsDiscovery`, `Vxi11Discovery`). The VISA sessions above are thin adapters over these clients. `VisaCs.Lan`
+depends on no other VisaCs package. Its types are in the `VisaCs.Lan` namespace (ONC RPC in `VisaCs.Lan.Rpc`),
+including `HislipSecurityOptions`, `HislipEncryptionMode`, `HislipDescriptor` and its own exceptions.
 
 ```csharp
 using System.Net;
 using System.Text;
-using VisaCs;       // VisaException, HislipSecurityOptions
 using VisaCs.Lan;
 
 // HiSLIP, encrypted when the server supports it.
@@ -248,17 +249,34 @@ foreach (IPAddress address in await Vxi11Discovery.DiscoverAsync(1000))
     Console.WriteLine($"VXI-11 portmapper at {address}");
 ```
 
-- **Timeouts.** `timeoutMilliseconds` bounds one call; -1 (`Timeout.Infinite`) waits without limit and 0 only
-  takes what has already arrived. A timeout throws `VisaTimeoutException`. VXI-11 passes the timeout to the
-  instrument as `io_timeout` and waits 2 s longer for the reply.
+- **Timeouts.** `timeoutMilliseconds` bounds one call; a negative value (`Timeout.Infinite`) waits without limit
+  and 0 does not wait (the call only takes what has already arrived, otherwise it times out). A timeout throws
+  `LanTimeoutException` (a `System.TimeoutException`) with `BytesTransferred`. VXI-11 passes the timeout to the
+  instrument as `io_timeout` and waits 2 s longer for the reply. For `MdnsDiscovery` and `Vxi11Discovery` the
+  timeout is how long to listen for answers (negative: until the token is cancelled).
 - **Cancellation.** Cancelling the token of an `*Async` call throws `OperationCanceledException`, with the same
   recovery as the VISA sessions (see [the table above](#timeouts-cancellation-and-threads)): `Vxi11Client`
   sends `device_abort`, `HislipClient` keeps its place in the response and drops late answers.
-- **Errors.** `VisaException` with `ErrorConnectionLost` once a connection has closed itself (a message only
-  partly sent, a HiSLIP fatal error, a failed TLS switch), `ErrorResourceNotFound` when the host, port or RPC
-  program cannot be reached, `ErrorIO` for protocol errors, `VisaSecurityException` for TLS and SASL failures.
-  `Vxi11Client` returns the instrument's error code (`Vxi11Error`) instead of throwing it;
-  `Vxi11Errors.ToException` gives the exception VISA would report.
+- **Errors.** Failures throw `LanException` (a `System.IO.IOException`). Its `Error` (`LanError`) says what
+  went wrong, `NativeError` carries the socket error code when there is one:
+
+  | `LanError` | Meaning | VISA status in the sessions |
+  |---|---|---|
+  | `ConnectionLost` | The connection is closed or broken, or closed itself (a message only partly sent, a HiSLIP fatal error, a failed TLS switch) | `VI_ERROR_CONN_LOST` |
+  | `HostNotFound`, `ConnectionRefused` | The host cannot be resolved or reached, or nothing listens on the port | `VI_ERROR_RSRC_NFOUND` |
+  | `DeviceNotFound` | No such VXI-11 device, HiSLIP sub-address or RPC program | `VI_ERROR_RSRC_NFOUND` |
+  | `ProtocolError`, `ServerError` | Malformed or unexpected data; an error reported by the server | `VI_ERROR_IO` |
+  | `NotSupported` | The server or protocol version lacks the operation | `VI_ERROR_NSUP_OPER` |
+  | `InvalidRequest` | The server rejected the request's arguments | `VI_ERROR_INV_PARAMETER` |
+  | `Locked`, `NotLocked`, `Busy` | Locked by another client; no lock held; server busy | `VI_ERROR_RSRC_LOCKED`, `VI_ERROR_SESN_NLOCKED`, `VI_ERROR_RSRC_BUSY` |
+  | `Aborted`, `OutOfResources` | VXI-11 abort; out of resources | `VI_ERROR_ABORT`, `VI_ERROR_ALLOC` |
+  | `Security` | TLS or SASL failure (`LanSecurityException`, `Failure` says which step) | `VI_ERROR_NPERMISSION` |
+
+  Subclasses add protocol detail: `Vxi11Exception` carries the VXI-11 `Code`, `RpcException` (in
+  `VisaCs.Lan.Rpc`) the `AcceptStatus` of a call the server did not accept. `Vxi11Client` returns the instrument's
+  error code (`Vxi11Error`) instead of throwing it; `Vxi11Errors.ToException` turns it into a `Vxi11Exception`
+  (a `LanTimeoutException` for `IOTimeout`). Invalid arguments throw the usual `ArgumentException` family, and a
+  disposed client `ObjectDisposedException`.
 - **Threads.** Use one caller at a time for a connection's data I/O (write, read, trigger, clear). HiSLIP
   asynchronous-channel requests (status byte, locks, lock info, descriptors) may run alongside it.
 - **ONC RPC.** `RpcTcpClient` calls one program and version over TCP; `RpcTcpServer` serves one (VXI-11's

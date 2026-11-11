@@ -1,5 +1,6 @@
 using System.Net;
 using VisaCs.Gpib;
+using VisaCs.Lan;
 using VisaCs.Usb;
 
 namespace VisaCs;

@@ -9,17 +9,20 @@ namespace VisaCs.Lan;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Timeouts are in milliseconds; -1 waits without limit. Calls that act on the device pass the timeout to it
-/// (<c>io_timeout</c>), so the device ends the call itself; the client waits 2 s longer for the reply. The device's
-/// own errors are returned as <see cref="Vxi11Error"/> codes (<see cref="Vxi11Errors.ToException"/> turns one into an
-/// exception). Transport failures throw <see cref="VisaException"/>, a reply that does not arrive in time
-/// <see cref="VisaTimeoutException"/>, and cancelling an asynchronous call <see cref="OperationCanceledException"/>.
+/// Timeouts are in milliseconds: negative (<see cref="Timeout.Infinite"/>) waits without limit, 0 does not wait. Calls
+/// that act on the device pass the timeout to it (<c>io_timeout</c>, so 0 lets the device complete only what it can
+/// do at once), and the device ends the call itself; the client waits 2 s longer for the reply. The device's own
+/// errors are returned as <see cref="Vxi11Error"/> codes (<see cref="Vxi11Errors.ToException"/> turns one into an
+/// exception). Transport and RPC failures throw <see cref="LanException"/> (<see cref="Rpc.RpcException"/> when the
+/// server does not accept a call), a reply that does not arrive in time <see cref="LanTimeoutException"/>, and
+/// cancelling an asynchronous call <see cref="OperationCanceledException"/>.
 /// </para>
 /// <para>
 /// Core-channel calls run one at a time. Cancelling an asynchronous call also sends <c>device_abort</c> on the abort
 /// channel, so the device ends the pending call; the link stays usable and the late reply is discarded. A
 /// device_abort is completed before the next core-channel call is sent, so it cannot end that call. A request cut off
-/// after part of it was sent closes the connection (later calls throw VI_ERROR_CONN_LOST). All channels go to the
+/// after part of it was sent closes the connection (later calls throw <see cref="LanException"/> with
+/// <see cref="LanError.ConnectionLost"/>). All channels go to the
 /// address the portmapper answered on.
 /// </para>
 /// </remarks>
@@ -140,7 +143,7 @@ public sealed class Vxi11Client : IDisposable
             _abort = await RpcTcpClient.ConnectAsync(new IPEndPoint(_address, AbortPort), Vxi11Protocol.AbortProgram, Vxi11Protocol.Version,
                 deadline, async).ConfigureAwait(false);
         }
-        catch (VisaException) when (!deadline.IsCanceled)
+        catch (Exception ex) when (LanErrors.IsLanError(ex) && !deadline.IsCanceled)
         {
             // Not fatal: AbortAsync connects when it is needed.
         }
@@ -297,7 +300,7 @@ public sealed class Vxi11Client : IDisposable
 
     /// <summary>
     /// device_abort on the abort channel: ends the core-channel call in progress. Waits up to 2 s. Throws
-    /// VI_ERROR_NSUP_OPER when the device has no abort channel.
+    /// <see cref="LanException"/> with <see cref="LanError.NotSupported"/> when the device has no abort channel.
     /// </summary>
     public Vxi11Error Abort() => AsyncIO.Complete(AbortCoreAsync(async: false));
 
@@ -406,7 +409,7 @@ public sealed class Vxi11Client : IDisposable
                 w.WriteUInt32(lockTimeout);
             }, reply, async).ConfigureAwait(false)).ReadInt32();
         }
-        catch (VisaTimeoutException)
+        catch (LanTimeoutException)
         {
             ReleaseAbandonedLock(lockTimeout);
             throw;
@@ -509,7 +512,7 @@ public sealed class Vxi11Client : IDisposable
                 var reply = await abort.CallAsync(Vxi11Protocol.ProcDeviceAbort, w => w.WriteInt32(LinkId), deadline, async).ConfigureAwait(false);
                 return (Vxi11Error)reply.ReadInt32();
             }
-            catch (VisaException)
+            catch (Exception ex) when (LanErrors.IsLanError(ex))
             {
                 // Reconnect next time: the device may have dropped the abort channel.
                 abort.Dispose();
