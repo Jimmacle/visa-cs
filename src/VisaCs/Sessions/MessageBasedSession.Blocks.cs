@@ -119,11 +119,14 @@ public abstract partial class MessageBasedSession
     /// Reads a binary block (see <see cref="ReadBinaryBlock"/>) and converts it to an array of <typeparamref name="T"/>
     /// in <see cref="BinaryByteOrder"/>. Throws VI_ERROR_INV_FMT if the block length is not a multiple of the element size.
     /// </summary>
-    public T[] ReadBinaryValues<T>() where T : unmanaged => Ieee4882.BytesToValues<T>(ReadBinaryBlock(), BinaryByteOrder);
+    public T[] ReadBinaryValues<T>() where T : unmanaged => BytesToValues<T>(ReadBinaryBlock());
 
     /// <summary>Reads a binary block as an array of <typeparamref name="T"/> without holding a thread; see <see cref="ReadBinaryValues{T}"/>.</summary>
     public async Task<T[]> ReadBinaryValuesAsync<T>(CancellationToken cancellationToken = default) where T : unmanaged =>
-        Ieee4882.BytesToValues<T>(await ReadBinaryBlockAsync(cancellationToken).ConfigureAwait(false), BinaryByteOrder);
+        BytesToValues<T>(await ReadBinaryBlockAsync(cancellationToken).ConfigureAwait(false));
+
+    private T[] BytesToValues<T>(byte[] data) where T : unmanaged =>
+        FormattingErrorMapping.Call((data, BinaryByteOrder), static s => Ieee4882.BytesToValues<T>(s.data, s.BinaryByteOrder));
 
     /// <summary>
     /// Writes <paramref name="command"/> with <see cref="WriteTermination"/>, waits <see cref="QueryDelay"/> and reads a
@@ -146,11 +149,11 @@ public abstract partial class MessageBasedSession
     /// Sends a command and reads a binary block response as an array of <typeparamref name="T"/> in
     /// <see cref="BinaryByteOrder"/>, e.g. <c>QueryBinaryValues&lt;float&gt;("CURV?")</c>.
     /// </summary>
-    public T[] QueryBinaryValues<T>(string command) where T : unmanaged => Ieee4882.BytesToValues<T>(QueryBinaryBlock(command), BinaryByteOrder);
+    public T[] QueryBinaryValues<T>(string command) where T : unmanaged => BytesToValues<T>(QueryBinaryBlock(command));
 
     /// <summary>Sends a command and reads binary values without holding a thread; see <see cref="QueryBinaryValues{T}"/>.</summary>
     public async Task<T[]> QueryBinaryValuesAsync<T>(string command, CancellationToken cancellationToken = default) where T : unmanaged =>
-        Ieee4882.BytesToValues<T>(await QueryBinaryBlockAsync(command, cancellationToken).ConfigureAwait(false), BinaryByteOrder);
+        BytesToValues<T>(await QueryBinaryBlockAsync(command, cancellationToken).ConfigureAwait(false));
 
     /// <summary>
     /// Writes <paramref name="prefix"/>, <paramref name="data"/> as a definite-length block
@@ -203,11 +206,14 @@ public abstract partial class MessageBasedSession
     /// Reads a response line of values separated by <see cref="AsciiSeparator"/>, parsed as <typeparamref name="T"/>
     /// with the rules of <see cref="Query{T}(string)"/>.
     /// </summary>
-    public T[] ReadAsciiValues<T>() where T : ISpanParsable<T> => Ieee4882.ParseValues<T>(ReadLine(), AsciiSeparator);
+    public T[] ReadAsciiValues<T>() where T : ISpanParsable<T> => ParseValues<T>(ReadLine());
 
     /// <summary>Reads separated values without holding a thread; see <see cref="ReadAsciiValues{T}()"/>.</summary>
     public async Task<T[]> ReadAsciiValuesAsync<T>(CancellationToken cancellationToken = default) where T : ISpanParsable<T> =>
-        Ieee4882.ParseValues<T>(await ReadLineAsync(cancellationToken).ConfigureAwait(false), AsciiSeparator);
+        ParseValues<T>(await ReadLineAsync(cancellationToken).ConfigureAwait(false));
+
+    private T[] ParseValues<T>(string text) where T : ISpanParsable<T> =>
+        FormattingErrorMapping.Call((text, AsciiSeparator), static s => Ieee4882.ParseValues<T>(s.text, s.AsciiSeparator));
 
     /// <summary>
     /// Sends a command and parses the response as numbers separated by <see cref="AsciiSeparator"/>, e.g.
@@ -224,12 +230,12 @@ public abstract partial class MessageBasedSession
     /// <typeparamref name="T"/> with the rules of <see cref="Query{T}(string)"/>.
     /// </summary>
     public T[] QueryAsciiValues<T>(string command) where T : ISpanParsable<T> =>
-        Ieee4882.ParseValues<T>(Query(command), AsciiSeparator);
+        ParseValues<T>(Query(command));
 
     /// <summary>Sends a command and parses separated values without holding a thread; see <see cref="QueryAsciiValues{T}(string)"/>.</summary>
     public async Task<T[]> QueryAsciiValuesAsync<T>(string command, CancellationToken cancellationToken = default)
         where T : ISpanParsable<T> =>
-        Ieee4882.ParseValues<T>(await QueryAsync(command, cancellationToken).ConfigureAwait(false), AsciiSeparator);
+        ParseValues<T>(await QueryAsync(command, cancellationToken).ConfigureAwait(false));
 
     /// <summary>
     /// Writes <paramref name="prefix"/>, then <paramref name="values"/> formatted with the invariant culture and

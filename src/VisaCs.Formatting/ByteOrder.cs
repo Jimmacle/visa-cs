@@ -1,4 +1,4 @@
-namespace VisaCs;
+namespace VisaCs.Formatting;
 
 /// <summary>Byte order of binary data and register access (VI_BIG_ENDIAN / VI_LITTLE_ENDIAN).</summary>
 public enum ByteOrder

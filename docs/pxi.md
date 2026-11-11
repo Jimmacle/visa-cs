@@ -89,13 +89,12 @@ empty, because the chassis layout is unknown without a PXI resource manager. The
 
 Device enumeration and register access are in the `VisaCs.Pci` library and work on their own, for any PCI(e)
 function: FPGA cards, custom PCIe hardware, PXI modules. The setup above applies (root or a udev rule; bind the
-function to `pci-stub`, `vfio-pci` or `uio_pci_generic`, or leave it without a driver). `PciDeviceInfo` and the
-errors it throws (`VisaException`, `VisaStatus` from `VisaCs.Primitives`) are in the `VisaCs` namespace,
-`PciRegion` in `VisaCs.Pci`.
+function to `pci-stub`, `vfio-pci` or `uio_pci_generic`, or leave it without a driver). The library depends on no
+other VisaCs package; all its types (`PciDeviceInfo`, `PciBar`, `PciBarType`, `PciRegion`, `PciException`,
+`PciError`) are in the `VisaCs.Pci` namespace.
 
 ```csharp
-using VisaCs;       // PciDeviceInfo, PciBar, VisaException, VisaStatus
-using VisaCs.Pci;   // PciRegion
+using VisaCs.Pci;   // PciDeviceInfo, PciBar, PciRegion, PciException
 
 foreach (var d in PciDeviceInfo.Enumerate().Where(d => d.IsAvailableToUserSpace))
     Console.WriteLine($"{d.Address} {d.VendorId:X4}:{d.DeviceId:X4} class {d.ClassCode:X6}");
@@ -115,19 +114,24 @@ ulong wide = bar0.Read(0x18, width: 8);   // or Read8/16/32/64, Write8/16/32/64
 
 - **Regions.** `OpenConfigurationSpace()` and `OpenBar(index)` return a `PciRegion` with its `Size`, its widest
   access (`MaxWidth`: 8, or 4 for I/O BARs) and, for memory BARs, the mapped pointer (`Address`, otherwise 0). A
-  BAR the device does not implement throws `VI_ERROR_INV_SPACE`; an index outside 0 to 5 throws
-  `ArgumentOutOfRangeException`.
-- **Checks.** Every access must be 1, 2, 4 or 8 bytes wide and at most `MaxWidth` (`VI_ERROR_NSUP_WIDTH`), aligned
-  to its width (`VI_ERROR_NSUP_ALIGN_OFFSET`) and inside the region (`VI_ERROR_INV_OFFSET`). Values are in host
-  order, which is the PCI order (little endian) on the hosts Linux runs on; there are no byte-order or increment
-  settings and no block moves, as there are in `PxiSession`.
+  BAR the device does not implement throws `PciException` with `PciError.BarNotImplemented`; an index outside 0 to
+  5 throws `ArgumentOutOfRangeException`.
+- **Checks.** Every access must be 1, 2, 4 or 8 bytes wide and at most `MaxWidth`, aligned to its width and inside
+  the region; otherwise it throws `ArgumentOutOfRangeException` (`ParamName` `width` or `offset`). Values are in
+  host order, which is the PCI order (little endian) on the hosts Linux runs on; there are no byte-order or
+  increment settings and no block moves, as there are in `PxiSession`.
+- **Errors.** Device and operating-system failures throw `PciException` (an `IOException`) whose `Error` says
+  what failed: `AccessDenied`, `NotFound` (the sysfs file is missing), `MapFailed` (a memory BAR cannot be
+  mapped), `BarNotImplemented`, `BusError` (a short read from an I/O BAR) or `IOError`. `PxiSession` reports them
+  as `VI_ERROR_NPERMISSION`, `VI_ERROR_RSRC_NFOUND`, `VI_ERROR_RSRC_BUSY`, `VI_ERROR_INV_SPACE`, `VI_ERROR_BERR`
+  and `VI_ERROR_IO`.
 - **Permissions.** Opening needs read access to the file; configuration space is opened for writing only at the
-  first write. Denied access throws `VI_ERROR_NPERMISSION`; reading configuration space past the first 64 bytes
+  first write. Denied access throws `PciError.AccessDenied`; reading configuration space past the first 64 bytes
   without root does too.
 - **Ownership.** `OpenBar` does not check `IsAvailableToUserSpace`; writing to a function that a kernel driver owns
   can disturb that driver.
 - **Threads and disposal.** Accesses may run on several threads at once. `Dispose` lets the accesses that are
-  running finish before a memory BAR is unmapped; later accesses throw `VI_ERROR_INV_OBJECT`. `Address` must not
+  running finish before a memory BAR is unmapped; later accesses throw `ObjectDisposedException`. `Address` must not
   be dereferenced after `Dispose`.
 
 ## Not supported

@@ -8,12 +8,12 @@ namespace VisaCs.Pci;
 /// <see cref="PciDeviceInfo.OpenConfigurationSpace"/> or <see cref="PciDeviceInfo.OpenBar"/>.
 /// </summary>
 /// <remarks>
-/// Each access is checked: the width must be 1, 2, 4 or 8 bytes and at most <see cref="MaxWidth"/>
-/// (<see cref="VisaStatus.ErrorWidthNotSupported"/>), the offset aligned to the width
-/// (<see cref="VisaStatus.ErrorAlignmentOffsetNotSupported"/>) and inside <see cref="Size"/>
-/// (<see cref="VisaStatus.ErrorInvalidOffset"/>). Values are in host byte order; PCI registers are little endian.
-/// Accesses may run on several threads; after <see cref="Dispose"/> they throw
-/// <see cref="VisaStatus.ErrorInvalidObject"/>, and an access that is running when Dispose is called completes first.
+/// Each access is checked: it throws <see cref="ArgumentOutOfRangeException"/> unless the width is 1, 2, 4 or 8 bytes
+/// and at most <see cref="MaxWidth"/> (<c>ParamName</c> "width"), and the offset is aligned to the width and inside
+/// <see cref="Size"/> (<c>ParamName</c> "offset"). Values are in host byte order; PCI registers are little endian.
+/// Accesses may run on several threads; after <see cref="Dispose"/> they throw <see cref="ObjectDisposedException"/>,
+/// and an access that is running when Dispose is called completes first. Device and operating-system failures throw
+/// <see cref="PciException"/>.
 /// </remarks>
 public abstract class PciRegion : IDisposable
 {
@@ -34,7 +34,9 @@ public abstract class PciRegion : IDisposable
     public virtual nint Address => 0;
 
     /// <summary>Reads <paramref name="width"/> bytes (1, 2, 4 or 8) at <paramref name="offset"/> as one access.</summary>
-    /// <exception cref="VisaException">The access is invalid or fails (see <see cref="PciRegion"/>).</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The width or offset is invalid (see <see cref="PciRegion"/>).</exception>
+    /// <exception cref="ObjectDisposedException">The region is disposed.</exception>
+    /// <exception cref="PciException">The access fails.</exception>
     public ulong Read(long offset, int width)
     {
         Check(offset, width);
@@ -45,7 +47,9 @@ public abstract class PciRegion : IDisposable
     /// Writes the low <paramref name="width"/> bytes (1, 2, 4 or 8) of <paramref name="value"/> at
     /// <paramref name="offset"/> as one access.
     /// </summary>
-    /// <exception cref="VisaException">The access is invalid or fails (see <see cref="PciRegion"/>).</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The width or offset is invalid (see <see cref="PciRegion"/>).</exception>
+    /// <exception cref="ObjectDisposedException">The region is disposed.</exception>
+    /// <exception cref="PciException">The access fails.</exception>
     public void Write(long offset, int width, ulong value)
     {
         Check(offset, width);
@@ -79,7 +83,7 @@ public abstract class PciRegion : IDisposable
 
     private void Check(long offset, int width)
     {
-        if (width is not (1 or 2 or 4 or 8) || width > MaxWidth) throw PciAccess.WidthNotSupported(width);
+        if (width is not (1 or 2 or 4 or 8) || width > MaxWidth) throw PciAccess.WidthNotSupported(width, MaxWidth);
         if (offset < 0 || offset % width != 0) throw PciAccess.Misaligned(offset, width);
         if (offset > Size - width) throw PciAccess.OutOfRange(offset, width, Size);
     }

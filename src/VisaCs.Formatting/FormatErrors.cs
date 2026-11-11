@@ -3,9 +3,20 @@ namespace VisaCs.Formatting;
 /// <summary>The exceptions this library throws for bad data or formats, built in one place.</summary>
 internal static class FormatErrors
 {
-    /// <summary>Malformed data, format or arguments (VI_ERROR_INV_FMT).</summary>
-    public static VisaException Invalid(string message, Exception? inner = null) => new(VisaStatus.ErrorInvalidFormat, message, inner);
+    // Marks the exceptions built here, so that a handler for BCL parse errors does not wrap them a second time.
+    private const string OwnKey = "VisaCs.Formatting";
 
-    /// <summary>An unknown format conversion (VI_ERROR_NSUP_FMT).</summary>
-    public static VisaException NotSupported(string message) => new(VisaStatus.ErrorFormatNotSupported, message);
+    /// <summary>Malformed data, format or arguments.</summary>
+    public static FormatException Invalid(string message, Exception? inner = null)
+    {
+        var ex = new FormatException(message, inner);
+        ex.Data[OwnKey] = true;
+        return ex;
+    }
+
+    /// <summary>An unknown or unsupported format conversion.</summary>
+    public static NotSupportedException NotSupported(string message) => new(message);
+
+    /// <summary>True if <paramref name="ex"/> was built by <see cref="Invalid"/>.</summary>
+    public static bool IsOwn(Exception ex) => ex.Data.Contains(OwnKey);
 }

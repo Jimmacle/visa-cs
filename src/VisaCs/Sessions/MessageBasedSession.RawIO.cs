@@ -182,11 +182,14 @@ public abstract partial class MessageBasedSession
     /// decimals accept exponents, and <see cref="bool"/> accepts <c>1</c>/<c>0</c> and <c>ON</c>/<c>OFF</c>.
     /// A response that does not parse throws VI_ERROR_INV_FMT.
     /// </summary>
-    public T Query<T>(string command) where T : ISpanParsable<T> => Ieee4882.ParseValue<T>(Query(command));
+    public T Query<T>(string command) where T : ISpanParsable<T> => ParseValue<T>(Query(command));
 
     /// <summary>Writes a command and parses the response without holding a thread; see <see cref="Query{T}(string)"/>.</summary>
     public async Task<T> QueryAsync<T>(string command, CancellationToken cancellationToken = default) where T : ISpanParsable<T> =>
-        Ieee4882.ParseValue<T>(await QueryAsync(command, cancellationToken).ConfigureAwait(false));
+        ParseValue<T>(await QueryAsync(command, cancellationToken).ConfigureAwait(false));
+
+    private static T ParseValue<T>(string text) where T : ISpanParsable<T> =>
+        FormattingErrorMapping.Call(text, static t => Ieee4882.ParseValue<T>(t));
 
     /// <summary>Writes a query command with <see cref="WriteTermination"/> and waits <see cref="QueryDelay"/>.</summary>
     private async ValueTask SendQueryUnguardedAsync(string command, CancellationToken cancellationToken, bool async)

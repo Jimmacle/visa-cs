@@ -29,8 +29,8 @@ public class CoreParsingTests
         Assert.False(Ieee4882.ParseValue<bool>("OFF"));
         Assert.True(Ieee4882.ParseValue<bool>("+1.000E+00"));
         Assert.Equal(1.5, Ieee4882.ParseValue<double>("+1.50000E+00"));
-        Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => Ieee4882.ParseValue<double>("abc")).Status);
-        Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => Ieee4882.ParseValue<byte>("300")).Status);
+        Assert.Throws<FormatException>(() => Ieee4882.ParseValue<double>("abc"));
+        Assert.Throws<FormatException>(() => Ieee4882.ParseValue<byte>("300"));
     }
 
     [Theory]
@@ -87,10 +87,9 @@ public class CoreParsingTests
     }
 
     [Fact]
-    public void FormatReportsArgumentErrorsAsVisaErrors()
+    public void FormatReportsArgumentErrorsAsFormatExceptions()
     {
-        var ex = Assert.Throws<VisaException>(() => VisaFormatter.FormatString("%d", "abc"));
-        Assert.Equal(VisaStatus.ErrorInvalidFormat, ex.Status);
+        Assert.Throws<FormatException>(() => VisaFormatter.FormatString("%d", "abc"));
         VisaFormatter.Format("A %d %*d", [1, 4, 2, 9], null, out int used);
         Assert.Equal(3, used);
     }

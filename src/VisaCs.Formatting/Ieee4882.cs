@@ -10,7 +10,7 @@ namespace VisaCs.Formatting;
 /// IEEE 488.2 data formats: arbitrary blocks (<c>#&lt;n&gt;&lt;length&gt;&lt;data&gt;</c>), binary arrays in a
 /// <see cref="ByteOrder"/>, and NR1/NR2/NR3 numbers in comma-separated text responses. Usable over any transport.
 /// </summary>
-/// <remarks>Errors in the data throw <see cref="VisaException"/> with <see cref="VisaStatus.ErrorInvalidFormat"/>.</remarks>
+/// <remarks>Errors in the data throw <see cref="FormatException"/>.</remarks>
 /// <example><code>
 /// byte[] data = Ieee4882.ParseBlock(response);                          // "#18" + 8 bytes + "\n"
 /// float[] samples = Ieee4882.BytesToValues&lt;float&gt;(data, ByteOrder.LittleEndian);
@@ -103,7 +103,7 @@ public static class Ieee4882
 
     /// <summary>
     /// The data of the block in a complete message (see <see cref="TryParseBlock"/>). Throws
-    /// <see cref="VisaStatus.ErrorInvalidFormat"/> if there is no valid block.
+    /// <see cref="FormatException"/> if there is no valid block.
     /// </summary>
     public static byte[] ParseBlock(ReadOnlySpan<byte> message) =>
         TryParseBlock(message, out var data)
@@ -114,7 +114,7 @@ public static class Ieee4882
 
     /// <summary>
     /// Reinterprets block data as an array of <typeparamref name="T"/> sent in <paramref name="byteOrder"/>.
-    /// Throws <see cref="VisaStatus.ErrorInvalidFormat"/> if the length is not a multiple of the element size.
+    /// Throws <see cref="FormatException"/> if the length is not a multiple of the element size.
     /// </summary>
     public static T[] BytesToValues<T>(ReadOnlySpan<byte> data, ByteOrder byteOrder) where T : unmanaged
     {
@@ -151,7 +151,7 @@ public static class Ieee4882
 
     /// <summary>
     /// Parses separated values with <see cref="TryParseValue"/>; surrounding white space and empty fields are
-    /// skipped. Throws <see cref="VisaStatus.ErrorInvalidFormat"/> for a field that does not parse.
+    /// skipped. Throws <see cref="FormatException"/> for a field that does not parse.
     /// </summary>
     public static T[] ParseValues<T>(ReadOnlySpan<char> text, char separator = ',') where T : ISpanParsable<T>
     {
@@ -170,7 +170,7 @@ public static class Ieee4882
 
     /// <summary>
     /// Parses one value with <see cref="TryParseValue"/>; surrounding white space is ignored. Throws
-    /// <see cref="VisaStatus.ErrorInvalidFormat"/> if it does not parse.
+    /// <see cref="FormatException"/> if it does not parse.
     /// </summary>
     public static T ParseValue<T>(ReadOnlySpan<char> text) where T : ISpanParsable<T>
     {

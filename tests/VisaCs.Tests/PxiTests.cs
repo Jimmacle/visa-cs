@@ -1,4 +1,7 @@
 using System.Buffers.Binary;
+using VisaCs.Formatting;
+using VisaCs.Internal;
+using VisaCs.Pci;
 
 namespace VisaCs.Tests;
 
@@ -375,4 +378,39 @@ public sealed class PxiSessionTests(FakePciFixture fixture) : IClassFixture<Fake
         Assert.Equal(device.DeviceId, session.In16(AddressSpace.PxiConfig, 2));
         Assert.Equal(device.ClassCode, session.In32(AddressSpace.PxiConfig, 8) >> 8);
     }
+}
+
+/// <summary>The VISA statuses PxiSession reports for VisaCs.Pci errors; runs on any OS.</summary>
+public class PciErrorMappingTests
+{
+    [Theory]
+    [InlineData(PciError.AccessDenied, VisaStatus.ErrorNoPermission)]
+    [InlineData(PciError.NotFound, VisaStatus.ErrorResourceNotFound)]
+    [InlineData(PciError.MapFailed, VisaStatus.ErrorResourceBusy)]
+    [InlineData(PciError.BarNotImplemented, VisaStatus.ErrorInvalidSpace)]
+    [InlineData(PciError.BusError, VisaStatus.ErrorBusError)]
+    [InlineData(PciError.IOError, VisaStatus.ErrorIO)]
+    public void MapsPciErrorsToVisaStatuses(PciError error, VisaStatus status)
+    {
+        var original = new PciException(error, "failed") { NativeError = 13 };
+        Assert.True(PciErrorMapping.IsPciError(original));
+        var mapped = PciErrorMapping.ToVisa(original);
+        Assert.Equal(status, mapped.Status);
+        Assert.Equal(13, mapped.NativeError);
+        Assert.Same(original, mapped.InnerException);
+    }
+
+    [Fact]
+    public void MapsAccessToAClosedRegionToInvalidObject()
+    {
+        var original = new ObjectDisposedException("The PCI region is closed.");
+        Assert.True(PciErrorMapping.IsPciError(original));
+        var mapped = PciErrorMapping.ToVisa(original);
+        Assert.Equal(VisaStatus.ErrorInvalidObject, mapped.Status);
+        Assert.Same(original, mapped.InnerException);
+    }
+
+    [Fact]
+    public void LeavesArgumentErrorsUnmapped() =>
+        Assert.False(PciErrorMapping.IsPciError(new ArgumentOutOfRangeException("offset")));
 }

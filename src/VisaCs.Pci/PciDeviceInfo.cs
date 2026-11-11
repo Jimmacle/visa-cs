@@ -1,8 +1,7 @@
 using System.Globalization;
 using System.Runtime.Versioning;
-using VisaCs.Pci;
 
-namespace VisaCs;
+namespace VisaCs.Pci;
 
 /// <summary>Kind of a PCI base address register (values match VI_PXI_ADDR_NONE / _MEM / _IO).</summary>
 public enum PciBarType
@@ -83,7 +82,7 @@ public sealed class PciDeviceInfo
     /// Opens the configuration space (the sysfs <c>config</c> file). It is opened for writing only at the first write,
     /// so reads need no privileges; beyond the first 64 bytes they need root, as writes do.
     /// </summary>
-    /// <exception cref="VisaException"><see cref="VisaStatus.ErrorNoPermission"/> or <see cref="VisaStatus.ErrorResourceNotFound"/>.</exception>
+    /// <exception cref="PciException"><see cref="PciError.AccessDenied"/> or <see cref="PciError.NotFound"/>.</exception>
     [SupportedOSPlatform("linux")]
     public PciRegion OpenConfigurationSpace() => new PciFileRegion(System.IO.Path.Combine(Path, "config"), 0, isConfig: true);
 
@@ -94,9 +93,9 @@ public sealed class PciDeviceInfo
     /// </summary>
     /// <param name="index">The BAR number, 0 to 5.</param>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="index"/> is not 0 to 5.</exception>
-    /// <exception cref="VisaException">
-    /// <see cref="VisaStatus.ErrorInvalidSpace"/> when the BAR is not implemented, <see cref="VisaStatus.ErrorNoPermission"/>,
-    /// <see cref="VisaStatus.ErrorResourceNotFound"/> or <see cref="VisaStatus.ErrorResourceBusy"/> when it cannot be opened.
+    /// <exception cref="PciException">
+    /// <see cref="PciError.BarNotImplemented"/> when the BAR is not implemented, <see cref="PciError.AccessDenied"/>,
+    /// <see cref="PciError.NotFound"/> or <see cref="PciError.MapFailed"/> when it cannot be opened.
     /// </exception>
     [SupportedOSPlatform("linux")]
     public PciRegion OpenBar(int index)

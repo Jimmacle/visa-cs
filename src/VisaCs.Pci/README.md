@@ -18,8 +18,7 @@ dotnet add package VisaCs.Pci --version 0.1.0
 ## Example
 
 ```csharp
-using VisaCs;       // PciDeviceInfo, VisaException
-using VisaCs.Pci;   // PciRegion
+using VisaCs.Pci;   // PciDeviceInfo, PciRegion, PciException
 
 foreach (PciDeviceInfo d in PciDeviceInfo.Enumerate())
     Console.WriteLine($"{d.Address} {d.VendorId:X4}:{d.DeviceId:X4} driver={d.Driver ?? "none"}");
@@ -38,9 +37,12 @@ uint status = bar0.Read32(0x14);
   `PciRegion.Address` gives the mapped pointer for your own unsafe code (valid until the region is disposed).
 - I/O BARs and configuration space are accessed with file reads and writes at the offset. I/O BARs take 8, 16
   and 32-bit accesses only, as Linux does. Configuration space is opened for writing only at the first write.
-- Every access is checked for width, alignment and bounds. Errors are `VisaException` (from
-  `VisaCs.Primitives`) with a `VisaStatus` code.
-- Accesses may run on several threads. Disposing a region lets running accesses finish; later ones throw.
+- Every access is checked for width, alignment and bounds and throws `ArgumentOutOfRangeException` when invalid.
+- Device and operating-system failures throw `PciException` (an `IOException`) with a `PciError`:
+  `AccessDenied`, `NotFound`, `MapFailed`, `BarNotImplemented`, `BusError` or `IOError`.
+- Accesses may run on several threads. Disposing a region lets running accesses finish; later ones throw
+  `ObjectDisposedException`.
+- The package depends on no other VisaCs package.
 - `OpenBar` does not check `IsAvailableToUserSpace`: writing to a function that a kernel driver owns can disturb
   that driver.
 
