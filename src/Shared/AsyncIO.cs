@@ -11,7 +11,7 @@ namespace VisaCs.Internal;
 /// </summary>
 /// <remarks>
 /// Inside the library an operation cancelled by the caller ends exactly like one that timed out (a
-/// <see cref="VisaTimeoutException"/>), so every protocol's timeout recovery also runs after cancellation. Public
+/// <see cref="SharedErrors.Timeout"/>), so every protocol's timeout recovery also runs after cancellation. Public
 /// async methods turn that into <see cref="OperationCanceledException"/> with <see cref="Canceled"/>.
 /// </remarks>
 internal static class AsyncIO

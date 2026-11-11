@@ -16,5 +16,6 @@
     <Compile Include="..\Shared\Libc.cs" Link="Internal\Libc.cs" />
     <Compile Include="..\Shared\NativeLibraries.cs" Link="Internal\NativeLibraries.cs" />
     <Compile Include="..\Shared\UnixPoller.cs" Link="Internal\UnixPoller.cs" />
+    <Compile Include="..\Shared\SharedErrors.cs" Link="Internal\SharedErrors.cs" />
   </ItemGroup>
 </Project>

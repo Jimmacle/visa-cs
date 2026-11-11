@@ -110,10 +110,10 @@ internal readonly struct Deadline
     public Deadline Extend(int milliseconds) =>
         IsInfinite ? this : new Deadline(_expires + (long)milliseconds * Stopwatch.Frequency / 1000, _cancellation);
 
-    /// <summary>Throws <see cref="VisaTimeoutException"/> ("<paramref name="operation"/> timed out.") once expired or cancelled.</summary>
+    /// <summary>Throws a timeout (<see cref="SharedErrors.Timeout"/>, "<paramref name="operation"/> timed out.") once expired or cancelled.</summary>
     public void ThrowIfExpired(string? operation = null)
     {
         if (HasExpired)
-            throw new VisaTimeoutException(operation is null ? null : $"{operation} timed out.");
+            throw SharedErrors.Timeout(operation is null ? null : $"{operation} timed out.", null, 0);
     }
 }

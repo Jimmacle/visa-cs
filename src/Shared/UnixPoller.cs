@@ -37,7 +37,10 @@ internal sealed unsafe class UnixPoller
         NativeLibraries.EnsureRegistered();
         int* fds = stackalloc int[2];
         if (Libc.CreatePipe(fds) != 0)
-            throw new VisaException(VisaStatus.ErrorSystemError, $"pipe failed (errno {Marshal.GetLastPInvokeError()}).");
+        {
+            int errno = Marshal.GetLastPInvokeError();
+            throw SharedErrors.SystemError($"pipe failed (errno {errno}).", errno);
+        }
         _wakeRead = fds[0];
         _wakeWrite = fds[1];
         // Named after the library: each library that links this file has its own poll thread.
@@ -107,7 +110,7 @@ internal sealed unsafe class UnixPoller
                 int errno = Marshal.GetLastPInvokeError();
                 if (errno == Libc.EINTR) continue;
                 // Not expected with valid arguments; fail the current waiters rather than spin.
-                var error = new VisaException(VisaStatus.ErrorSystemError, $"poll failed (errno {errno}).");
+                var error = SharedErrors.SystemError($"poll failed (errno {errno}).", errno);
                 foreach (var w in active) Complete(w, error);
                 continue;
             }

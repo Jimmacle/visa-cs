@@ -11,5 +11,6 @@
   <ItemGroup>
     <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
     <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
+    <Compile Include="..\Shared\SharedErrors.cs" Link="Internal\SharedErrors.cs" />
   </ItemGroup>
 </Project>

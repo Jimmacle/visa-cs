@@ -22,6 +22,7 @@
     <Compile Include="..\Shared\ChangeSignal.cs" Link="Internal\ChangeSignal.cs" />
     <Compile Include="..\Shared\IOGate.cs" Link="Internal\IOGate.cs" />
     <Compile Include="..\Shared\NetUtil.cs" Link="Internal\NetUtil.cs" />
+    <Compile Include="..\Shared\SharedErrors.cs" Link="Internal\SharedErrors.cs" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="VisaCs.Tests" />

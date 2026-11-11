@@ -44,6 +44,42 @@ git push origin HEAD:refs/heads/pr-<number>
 gh workflow run ci.yml --ref pr-<number>
 ```
 
+## Component libraries
+
+`VisaCs.Serial`, `VisaCs.Usb`, `VisaCs.Gpib`, `VisaCs.Lan`, `VisaCs.Pci` and `VisaCs.Formatting` are usable on their
+own. They follow these rules:
+
+- **Dependencies.** A component library references no other VisaCs project and no third-party package. It may link
+  internal helpers from `src/Shared/` as source. `VisaCs` (the VISA library) references all of them.
+  `tests/VisaCs.Tests/PackageLayoutTests.cs` enforces this.
+- **Namespaces.** Every public type of a component library is in that library's namespace (`VisaCs.Serial`,
+  `VisaCs.Usb`, ...).
+- **Errors.**
+  - Device, OS and protocol failures throw the library's own exception, derived from `System.IO.IOException` and
+    named `<Area>Exception` (`SerialPortException`, `UsbException`, `GpibException`, `LanException`,
+    `PciException`). It has an `<Area>Error` enum property `Error` that names the failure in the library's own terms
+    (not VISA names), and `int? NativeError` (the OS or driver error code) when known. A library may add a few
+    subclasses for protocol-specific detail (for example a VXI-11 error code, or a security failure).
+  - Timeouts throw `<Area>TimeoutException : System.TimeoutException`, with `int BytesTransferred`.
+  - Programming errors use the BCL types: the `ArgumentException` family, `ObjectDisposedException`,
+    `InvalidOperationException`, `PlatformNotSupportedException`.
+  - Cancellation by the caller throws `OperationCanceledException`.
+  - `VisaCs.Formatting` throws `FormatException` for invalid formats and input, and `NotSupportedException` for
+    unsupported conversions.
+- **Mapping to VISA.** `VisaCs` translates each library's exceptions to `VisaException`/`VisaTimeoutException` with
+  the matching `VisaStatus`, keeping `NativeError`, `BytesTransferred` and the original exception as
+  `InnerException`. Each library's mapping is one internal file under `src/VisaCs/Internal/` (for example
+  `SerialErrorMapping.cs`). The VISA library's behavior and status codes don't change.
+- **Timeouts.** An `int timeoutMilliseconds` parameter means: negative (`Timeout.Infinite`) = no limit; 0 = don't
+  wait (the operation fails with a timeout unless it can complete immediately); positive = milliseconds. Every I/O
+  method has a synchronous form and an asynchronous form that also takes a `CancellationToken`.
+- **Shared sources.** Files in `src/Shared/` never reference library or VISA types. They create and recognize
+  exceptions only through `SharedErrors` (`src/Shared/SharedErrors.cs`), which each assembly that links them
+  implements in its own `Internal/SharedErrors.Implementation.cs`.
+- **Tests.** Component libraries don't grant `InternalsVisibleTo` to `VisaCs.Tests` (internal Shared types compiled
+  into several assemblies would clash). Test them through their public API, or in a separate test project, as
+  `tests/VisaCs.Lan.Tests` does.
+
 ## Releasing
 
 1. Set `<Version>` in `src/Directory.Build.props` (semantic versioning).

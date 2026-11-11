@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 
 namespace VisaCs.Internal;
 
@@ -61,7 +62,7 @@ internal static class NetUtil
             {
                 return await ConnectAsync(new IPEndPoint(address, port), deadline, async, noDelay, host).ConfigureAwait(false);
             }
-            catch (VisaException ex) when (ex is not VisaTimeoutException && ex.InnerException is SocketException se)
+            catch (Exception ex) when (!SharedErrors.IsTimeout(ex) && ex.InnerException is SocketException se)
             {
                 last = se;
             }
@@ -217,9 +218,8 @@ internal static class NetUtil
     }
 
     /// <summary>
-    /// Sends all of <paramref name="data"/>. A timeout throws <see cref="SendTimeoutException"/>: framed protocols must
-    /// close the connection unless <see cref="SendTimeoutException.NothingSent"/>, because the peer is left inside a
-    /// message.
+    /// Sends all of <paramref name="data"/>. A timeout carries the number of bytes sent: framed protocols must close
+    /// the connection when <see cref="MayHaveSentPart"/>, because the peer is left inside a message.
     /// </summary>
     public static async ValueTask SendAllAsync(Socket socket, ReadOnlyMemory<byte> data, Deadline deadline, bool async)
     {
@@ -237,7 +237,7 @@ internal static class NetUtil
             if (!async)
             {
                 if (!WaitFor(socket, SelectMode.SelectWrite, deadline))
-                    throw new SendTimeoutException(SendTimeoutMessage(sent), null, nothingSent: sent == 0) { BytesTransferred = sent };
+                    throw sent == 0 ? Timeout(null, null) : PartialSendTimeout(SendTimeoutMessage(sent), null, sent);
                 continue;
             }
             using var cts = deadline.CreateTokenSource();
@@ -248,7 +248,7 @@ internal static class NetUtil
             catch (OperationCanceledException ex)
             {
                 // A cancelled send may have handed part of the data to the network already; how much is not reported.
-                throw new SendTimeoutException(SendTimeoutMessage(sent), ex, nothingSent: false) { BytesTransferred = sent };
+                throw PartialSendTimeout(SendTimeoutMessage(sent), ex, sent);
             }
             catch (SocketException ex)
             {
@@ -261,10 +261,25 @@ internal static class NetUtil
 
     /// <summary>
     /// True when a failed send may have left the peer inside a message: anything but a timeout that sent nothing
-    /// (a <see cref="VisaTimeoutException"/> other than <see cref="SendTimeoutException"/> comes from waiting for a gate
-    /// or a deadline that had passed before anything was sent).
+    /// (a timeout not created by <see cref="PartialSendTimeout"/> comes from waiting for a gate or a deadline that had
+    /// passed before anything was sent).
     /// </summary>
-    public static bool MayHaveSentPart(Exception ex) => ex is not VisaTimeoutException || ex is SendTimeoutException { NothingSent: false };
+    public static bool MayHaveSentPart(Exception ex) => !SharedErrors.IsTimeout(ex) || PartialSendTimeouts.TryGetValue(ex, out _);
+
+    /// <summary>
+    /// Creates the timeout for a send that may have handed part of the data to the network (<paramref name="sent"/>
+    /// counts the bytes known to be sent), so <see cref="MayHaveSentPart"/> is true for it.
+    /// </summary>
+    public static Exception PartialSendTimeout(string? message, Exception? innerException, int sent)
+    {
+        var ex = SharedErrors.Timeout(message, innerException, sent);
+        PartialSendTimeouts.AddOrUpdate(ex, PartialSendMarker);
+        return ex;
+    }
+
+    // The timeouts created by PartialSendTimeout. Weak keys: an entry goes away with its exception.
+    private static readonly ConditionalWeakTable<Exception, object> PartialSendTimeouts = new();
+    private static readonly object PartialSendMarker = new();
 
     /// <summary>Discards everything currently readable without blocking.</summary>
     public static void Drain(Socket socket)
@@ -300,20 +315,13 @@ internal static class NetUtil
     public static IPAddress Normalize(IPAddress address) =>
         address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 
-    // The exceptions this class creates (besides SendTimeoutException), in one place.
-    private static VisaTimeoutException Timeout(string? message = null, Exception? innerException = null) => new(message, innerException);
+    // The exceptions this class creates, in one place.
+    private static Exception Timeout(string? message = null, Exception? innerException = null) =>
+        SharedErrors.Timeout(message, innerException, 0);
 
-    private static VisaException ConnectionLost(string message, Exception? innerException = null) =>
-        new(VisaStatus.ErrorConnectionLost, message, innerException);
+    private static Exception ConnectionLost(string message, Exception? innerException = null) =>
+        SharedErrors.ConnectionLost(message, innerException);
 
-    private static VisaException NotFound(string message, Exception? innerException = null) =>
-        new(VisaStatus.ErrorResourceNotFound, message, innerException);
-}
-
-/// <summary>A send that timed out (VI_ERROR_TMO). <see cref="NothingSent"/> tells whether the peer can have received part of the data.</summary>
-internal sealed class SendTimeoutException(string? message, Exception? innerException, bool nothingSent)
-    : VisaTimeoutException(message, innerException)
-{
-    /// <summary>True when none of the data reached the network, so the peer is not inside a message.</summary>
-    public bool NothingSent { get; } = nothingSent;
+    private static Exception NotFound(string message, Exception? innerException = null) =>
+        SharedErrors.NotFound(message, innerException);
 }

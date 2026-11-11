@@ -125,8 +125,7 @@ internal static class Hislip
             catch (VisaTimeoutException ex)
             {
                 // The header is out: whatever happened to the payload, the server is inside this message.
-                throw new SendTimeoutException("The send timed out after the message header.", ex, nothingSent: false)
-                    { BytesTransferred = HeaderSize + ex.BytesTransferred };
+                throw NetUtil.PartialSendTimeout("The send timed out after the message header.", ex, HeaderSize + ex.BytesTransferred);
             }
         }
     }
