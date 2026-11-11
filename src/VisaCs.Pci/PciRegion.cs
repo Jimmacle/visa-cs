@@ -1,30 +1,101 @@
 using System.IO.MemoryMappedFiles;
 using Microsoft.Win32.SafeHandles;
 
-namespace VisaCs.Pxi;
+namespace VisaCs.Pci;
 
 /// <summary>
-/// Register access to one address space of a PCI function. Accesses may run on several threads; after
-/// <see cref="IDisposable.Dispose"/> they throw <see cref="VisaStatus.ErrorInvalidObject"/>, and an access that is
-/// running when Dispose is called completes first.
+/// Register access to one address space of a PCI function: its configuration space or a BAR. Open one with
+/// <see cref="PciDeviceInfo.OpenConfigurationSpace"/> or <see cref="PciDeviceInfo.OpenBar"/>.
 /// </summary>
-internal interface IPciRegion : IDisposable
+/// <remarks>
+/// Each access is checked: the width must be 1, 2, 4 or 8 bytes and at most <see cref="MaxWidth"/>
+/// (<see cref="VisaStatus.ErrorWidthNotSupported"/>), the offset aligned to the width
+/// (<see cref="VisaStatus.ErrorAlignmentOffsetNotSupported"/>) and inside <see cref="Size"/>
+/// (<see cref="VisaStatus.ErrorInvalidOffset"/>). Values are in host byte order; PCI registers are little endian.
+/// Accesses may run on several threads; after <see cref="Dispose"/> they throw
+/// <see cref="VisaStatus.ErrorInvalidObject"/>, and an access that is running when Dispose is called completes first.
+/// </remarks>
+public abstract class PciRegion : IDisposable
 {
-    long Size { get; }
+    private protected PciRegion()
+    {
+    }
 
-    /// <summary>The widest access in bytes the region supports.</summary>
-    int MaxWidth { get; }
+    /// <summary>Size of the address space in bytes.</summary>
+    public abstract long Size { get; }
 
-    ulong Read(long offset, int width);
+    /// <summary>The widest access in bytes: 8, or 4 for I/O BARs (Linux accesses I/O ports 1, 2 or 4 bytes at a time).</summary>
+    public abstract int MaxWidth { get; }
 
-    void Write(long offset, int width, ulong value);
+    /// <summary>
+    /// Process address of a mapped memory BAR, otherwise 0. Valid only until the region is disposed: dereferencing it
+    /// afterwards crashes the process. Accesses through it bypass the checks.
+    /// </summary>
+    public virtual nint Address => 0;
+
+    /// <summary>Reads <paramref name="width"/> bytes (1, 2, 4 or 8) at <paramref name="offset"/> as one access.</summary>
+    /// <exception cref="VisaException">The access is invalid or fails (see <see cref="PciRegion"/>).</exception>
+    public ulong Read(long offset, int width)
+    {
+        Check(offset, width);
+        return ReadCore(offset, width);
+    }
+
+    /// <summary>
+    /// Writes the low <paramref name="width"/> bytes (1, 2, 4 or 8) of <paramref name="value"/> at
+    /// <paramref name="offset"/> as one access.
+    /// </summary>
+    /// <exception cref="VisaException">The access is invalid or fails (see <see cref="PciRegion"/>).</exception>
+    public void Write(long offset, int width, ulong value)
+    {
+        Check(offset, width);
+        WriteCore(offset, width, value);
+    }
+
+    /// <summary>Reads an 8-bit register.</summary>
+    public byte Read8(long offset) => (byte)Read(offset, 1);
+    /// <summary>Reads a 16-bit register.</summary>
+    public ushort Read16(long offset) => (ushort)Read(offset, 2);
+    /// <summary>Reads a 32-bit register.</summary>
+    public uint Read32(long offset) => (uint)Read(offset, 4);
+    /// <summary>Reads a 64-bit register; not available in I/O BARs.</summary>
+    public ulong Read64(long offset) => Read(offset, 8);
+
+    /// <summary>Writes an 8-bit register.</summary>
+    public void Write8(long offset, byte value) => Write(offset, 1, value);
+    /// <summary>Writes a 16-bit register.</summary>
+    public void Write16(long offset, ushort value) => Write(offset, 2, value);
+    /// <summary>Writes a 32-bit register.</summary>
+    public void Write32(long offset, uint value) => Write(offset, 4, value);
+    /// <summary>Writes a 64-bit register; not available in I/O BARs.</summary>
+    public void Write64(long offset, ulong value) => Write(offset, 8, value);
+
+    /// <summary>Closes the region; a memory BAR is unmapped once the accesses that are running finish.</summary>
+    public void Dispose()
+    {
+        DisposeCore();
+        GC.SuppressFinalize(this);
+    }
+
+    private void Check(long offset, int width)
+    {
+        if (width is not (1 or 2 or 4 or 8) || width > MaxWidth) throw PciAccess.WidthNotSupported(width);
+        if (offset < 0 || offset % width != 0) throw PciAccess.Misaligned(offset, width);
+        if (offset > Size - width) throw PciAccess.OutOfRange(offset, width, Size);
+    }
+
+    private protected abstract ulong ReadCore(long offset, int width);
+
+    private protected abstract void WriteCore(long offset, int width, ulong value);
+
+    private protected abstract void DisposeCore();
 }
 
 /// <summary>
 /// Configuration space or an I/O BAR, accessed with positional reads and writes on a sysfs file. The file is opened for
 /// reading first and for writing on the first write, so reading configuration space needs no privileges.
 /// </summary>
-internal sealed class PciFileRegion : IPciRegion
+internal sealed class PciFileRegion : PciRegion
 {
     private readonly string _path;
     private readonly bool _isConfig;
@@ -44,12 +115,12 @@ internal sealed class PciFileRegion : IPciRegion
         Size = size > 0 ? size : RandomAccess.GetLength(_reader);
     }
 
-    public long Size { get; }
+    public override long Size { get; }
 
     /// <summary>Linux reads and writes I/O ports 1, 2 or 4 bytes at a time; configuration space allows any width.</summary>
-    public int MaxWidth => _isConfig ? 8 : 4;
+    public override int MaxWidth => _isConfig ? 8 : 4;
 
-    public ulong Read(long offset, int width)
+    private protected override ulong ReadCore(long offset, int width)
     {
         Span<byte> buffer = stackalloc byte[8];
         int n;
@@ -61,13 +132,7 @@ internal sealed class PciFileRegion : IPciRegion
         {
             throw PciAccess.Translate(ex, _path, offset);
         }
-        if (n != width)
-        {
-            throw _isConfig
-                ? new VisaException(VisaStatus.ErrorNoPermission,
-                    $"Configuration space beyond the first 64 bytes needs root (offset 0x{offset:X}).")
-                : new VisaException(VisaStatus.ErrorBusError, $"Short PCI read at offset 0x{offset:X}.");
-        }
+        if (n != width) throw PciAccess.ShortRead(_isConfig, offset);
         return width switch
         {
             1 => buffer[0],
@@ -77,7 +142,7 @@ internal sealed class PciFileRegion : IPciRegion
         };
     }
 
-    public void Write(long offset, int width, ulong value)
+    private protected override void WriteCore(long offset, int width, ulong value)
     {
         var writer = Writer();
         Span<byte> buffer = stackalloc byte[8];
@@ -101,7 +166,7 @@ internal sealed class PciFileRegion : IPciRegion
         }
     }
 
-    public void Dispose()
+    private protected override void DisposeCore()
     {
         lock (_lock)
         {
@@ -116,7 +181,7 @@ internal sealed class PciFileRegion : IPciRegion
 /// A memory BAR mapped into the process (mmap of the sysfs resourceN file); accesses are single, exact-width loads and
 /// stores. Each access holds a reference on the mapping, so Dispose unmaps only after running accesses finish.
 /// </summary>
-internal sealed unsafe class PciMappedRegion : IPciRegion
+internal sealed unsafe class PciMappedRegion : PciRegion
 {
     private readonly MemoryMappedFile _file;
     private readonly MemoryMappedViewAccessor _view;
@@ -132,7 +197,7 @@ internal sealed unsafe class PciMappedRegion : IPciRegion
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
-            throw MapError(path, ex);
+            throw PciAccess.MapError(path, ex);
         }
         try
         {
@@ -141,7 +206,7 @@ internal sealed unsafe class PciMappedRegion : IPciRegion
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
             _file.Dispose();
-            throw MapError(path, ex);
+            throw PciAccess.MapError(path, ex);
         }
         _handle = _view.SafeMemoryMappedViewHandle;
         byte* pointer = null;
@@ -150,19 +215,13 @@ internal sealed unsafe class PciMappedRegion : IPciRegion
         Size = size;
     }
 
-    private static VisaException MapError(string path, Exception ex) => ex is UnauthorizedAccessException
-        ? new VisaException(VisaStatus.ErrorNoPermission,
-            $"Access to {path} was denied. PCI BAR access needs root or a udev rule granting access to the resource files.", ex)
-        : new VisaException(VisaStatus.ErrorResourceBusy, $"Cannot map {path}: {ex.Message}", ex);
+    public override long Size { get; }
 
-    public long Size { get; }
+    public override int MaxWidth => 8;
 
-    public int MaxWidth => 8;
+    public override nint Address => (nint)_base;
 
-    /// <summary>The mapped address; valid until Dispose.</summary>
-    public nint Address => (nint)_base;
-
-    public ulong Read(long offset, int width)
+    private protected override ulong ReadCore(long offset, int width)
     {
         bool added = false;
         try
@@ -182,7 +241,7 @@ internal sealed unsafe class PciMappedRegion : IPciRegion
         }
     }
 
-    public void Write(long offset, int width, ulong value)
+    private protected override void WriteCore(long offset, int width, ulong value)
     {
         bool added = false;
         try
@@ -216,44 +275,11 @@ internal sealed unsafe class PciMappedRegion : IPciRegion
         }
     }
 
-    public void Dispose()
+    private protected override void DisposeCore()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _handle.ReleasePointer();
         _view.Dispose(); // unmaps once no access holds a reference
         _file.Dispose();
     }
-}
-
-internal static class PciAccess
-{
-    public static SafeFileHandle OpenFile(string path, FileAccess access)
-    {
-        try
-        {
-            return File.OpenHandle(path, FileMode.Open, access, FileShare.ReadWrite);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            throw new VisaException(VisaStatus.ErrorNoPermission,
-                $"Access to {path} was denied. PCI register access needs root or a udev rule granting access.", ex);
-        }
-        catch (FileNotFoundException ex)
-        {
-            throw new VisaException(VisaStatus.ErrorResourceNotFound, $"{path} does not exist.", ex);
-        }
-    }
-
-    /// <summary>The error for an access to a region of a closed session.</summary>
-    public static VisaException Closed() => new(VisaStatus.ErrorInvalidObject, "The session is closed.");
-
-    public static bool IsAccessError(Exception ex) => ex is ObjectDisposedException or UnauthorizedAccessException or IOException;
-
-    /// <summary>The VISA error for a failed file access (see <see cref="IsAccessError"/>).</summary>
-    public static VisaException Translate(Exception ex, string path, long offset) => ex switch
-    {
-        ObjectDisposedException => Closed(),
-        UnauthorizedAccessException => new VisaException(VisaStatus.ErrorNoPermission, $"Access to {path} at offset 0x{offset:X} was denied.", ex),
-        _ => new VisaException(VisaStatus.ErrorIO, $"PCI access to {path} at offset 0x{offset:X} failed: {ex.Message}", ex),
-    };
 }

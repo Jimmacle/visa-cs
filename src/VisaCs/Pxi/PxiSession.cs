@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using VisaCs.Pxi;
+using VisaCs.Pci;
 
 namespace VisaCs;
 
@@ -29,7 +29,7 @@ namespace VisaCs;
 public sealed class PxiSession : VisaSession
 {
     private readonly PxiResourceName _name;
-    private readonly Dictionary<AddressSpace, IPciRegion> _regions = new(); // guarded by itself, as are _window and _closed
+    private readonly Dictionary<AddressSpace, PciRegion> _regions = new(); // guarded by itself, as are _window and _closed
     private PciDeviceInfo? _device;
     private PxiWindow? _window;
     private bool _closed;
@@ -88,8 +88,7 @@ public sealed class PxiSession : VisaSession
         if (_name.Chassis is not null)
             throw new VisaException(VisaStatus.ErrorResourceNotFound,
                 "PXI chassis/slot names need a chassis description (pxisys.ini); use the bus-device.function form, e.g. PXI0::3-18.0::INSTR.");
-        string path = Path.Combine(root, _name.PciAddress);
-        var device = Directory.Exists(path) ? PciDeviceInfo.Read(path) : null;
+        var device = PciDeviceInfo.FromAddress(_name.PciAddress, root);
         if (device is null)
             throw new VisaException(VisaStatus.ErrorResourceNotFound, $"PCI device {_name.PciAddress} was not found in {root}.");
         if (!device.IsAvailableToUserSpace)
@@ -104,7 +103,7 @@ public sealed class PxiSession : VisaSession
     private protected override ValueTask CloseCoreAsync(bool async)
     {
         PxiWindow? window;
-        List<IPciRegion> regions;
+        List<PciRegion> regions;
         lock (_regions)
         {
             _closed = true;
@@ -120,37 +119,27 @@ public sealed class PxiSession : VisaSession
     /// <summary>Describes one BAR (type, address and size); <paramref name="index"/> is 0 to 5.</summary>
     public PciBar GetBar(int index) => Device.Bars[index];
 
-    private IPciRegion Region(AddressSpace space)
+    private static VisaException Closed() => new(VisaStatus.ErrorInvalidObject, "The session is closed.");
+
+    private PciRegion Region(AddressSpace space)
     {
         lock (_regions)
         {
-            if (_closed) throw PciAccess.Closed();
+            if (_closed) throw Closed();
             if (_regions.TryGetValue(space, out var region)) return region;
+            if (!OperatingSystem.IsLinux()) throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open."); // never opens elsewhere
             if (space == AddressSpace.PxiConfig)
-            {
-                region = new PciFileRegion(Path.Combine(Device.Path, "config"), 0, isConfig: true);
-            }
+                region = Device.OpenConfigurationSpace();
             else if (space is >= AddressSpace.PxiBar0 and <= AddressSpace.PxiBar5)
-            {
-                var bar = Device.Bars[space - AddressSpace.PxiBar0];
-                string file = Path.Combine(Device.Path, $"resource{bar.Index}");
-                region = bar.Type switch
-                {
-                    PciBarType.Memory => new PciMappedRegion(file, (long)bar.Size),
-                    PciBarType.IO => new PciFileRegion(file, (long)bar.Size, isConfig: false),
-                    _ => throw new VisaException(VisaStatus.ErrorInvalidSpace, $"BAR{bar.Index} is not implemented by this device."),
-                };
-            }
+                region = Device.OpenBar(space - AddressSpace.PxiBar0);
             else
-            {
                 throw new VisaException(VisaStatus.ErrorInvalidSpace, $"Address space {space} is not valid for PXI.");
-            }
             _regions[space] = region;
             return region;
         }
     }
 
-    private IPciRegion Checked(AddressSpace space, long offset, int width, long count = 1)
+    private PciRegion Checked(AddressSpace space, long offset, int width, long count = 1)
     {
         EnsureAccess();
         var region = Region(space);
@@ -256,7 +245,7 @@ public sealed class PxiSession : VisaSession
         var region = Checked(space, offset, 1, size);
         lock (_regions)
         {
-            if (_closed) throw PciAccess.Closed();
+            if (_closed) throw Closed();
             if (_window is not null) throw new VisaException(VisaStatus.ErrorWindowMapped);
             return _window = new PxiWindow(this, region, space, offset, size);
         }

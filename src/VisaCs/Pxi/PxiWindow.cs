@@ -1,4 +1,4 @@
-using VisaCs.Pxi;
+using VisaCs.Pci;
 
 namespace VisaCs;
 
@@ -10,17 +10,17 @@ namespace VisaCs;
 public sealed class PxiWindow : IDisposable
 {
     private readonly PxiSession _session;
-    private readonly IPciRegion _region;
+    private readonly PciRegion _region;
     private bool _disposed;
 
-    internal PxiWindow(PxiSession session, IPciRegion region, AddressSpace space, long offset, long size)
+    internal PxiWindow(PxiSession session, PciRegion region, AddressSpace space, long offset, long size)
     {
         _session = session;
         _region = region;
         Space = space;
         Offset = offset;
         Size = size;
-        Address = region is PciMappedRegion mapped ? mapped.Address + (nint)offset : 0;
+        Address = region.Address != 0 ? region.Address + (nint)offset : 0;
     }
 
     /// <summary>The mapped address space.</summary>

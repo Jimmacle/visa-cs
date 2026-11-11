@@ -1,5 +1,6 @@
 using System.Reflection;
 using VisaCs.Gpib;
+using VisaCs.Pci;
 using VisaCs.Serial;
 using VisaCs.Usb;
 
@@ -14,12 +15,13 @@ public sealed class PackageLayoutTests
         typeof(NativeSerialPort).Assembly,
         typeof(IUsbBackend).Assembly,
         typeof(IGpibDriver).Assembly,
+        typeof(PciRegion).Assembly,
     ];
 
     [Fact]
     public void ComponentLibrariesStandAlone()
     {
-        Assert.Equal(4, Components.Distinct().Count());
+        Assert.Equal(5, Components.Distinct().Count());
         foreach (var assembly in Components)
         {
             // The framework and VisaCs.Primitives only: never VisaCs itself or another component library.

@@ -15,6 +15,7 @@ card.Out32(AddressSpace.PxiBar0, 0x10, 0x1);
 `PxiSession` is a `VisaSession` but not a `MessageBasedSession`, so open it with `Open<PxiSession>` or
 `Open<VisaSession>` (plain `Open` throws `VI_ERROR_INV_OBJECT`). `PxiSession.Device` describes the function
 (`PciDeviceInfo`: addresses, IDs, bound driver, BARs); `PciDeviceInfo.Enumerate()` lists all functions in sysfs.
+The sysfs access itself is in the `VisaCs.Pci` library, usable without VISA ([below](#without-visa)).
 
 ## Which devices can be opened
 
@@ -83,6 +84,51 @@ of each implemented BAR (`VI_ATTR_PXI_MEM_TYPE_BARn`, `..._MEM_BASE_BARn[_32]`, 
 the byte-order and increment attributes, and the window attributes (`VI_ATTR_WIN_ACCESS`, `..._BASE_ADDR`,
 `..._SIZE`, `..._BYTE_ORDER`). `VI_ATTR_PXI_CHASSIS` and `VI_ATTR_SLOT` report -1 and `VI_ATTR_PXI_SLOTPATH` is
 empty, because the chassis layout is unknown without a PXI resource manager. The full list is in [attributes.md](attributes.md).
+
+## Without VISA
+
+Device enumeration and register access are in the `VisaCs.Pci` library and work on their own, for any PCI(e)
+function: FPGA cards, custom PCIe hardware, PXI modules. The setup above applies (root or a udev rule; bind the
+function to `pci-stub`, `vfio-pci` or `uio_pci_generic`, or leave it without a driver). `PciDeviceInfo` and the
+errors it throws (`VisaException`, `VisaStatus` from `VisaCs.Primitives`) are in the `VisaCs` namespace,
+`PciRegion` in `VisaCs.Pci`.
+
+```csharp
+using VisaCs;       // PciDeviceInfo, PciBar, VisaException, VisaStatus
+using VisaCs.Pci;   // PciRegion
+
+foreach (var d in PciDeviceInfo.Enumerate().Where(d => d.IsAvailableToUserSpace))
+    Console.WriteLine($"{d.Address} {d.VendorId:X4}:{d.DeviceId:X4} class {d.ClassCode:X6}");
+
+var card = PciDeviceInfo.FromAddress("0000:03:12.0") ?? throw new InvalidOperationException("No such function.");
+foreach (var bar in card.Bars.Where(b => b.Type != PciBarType.None))
+    Console.WriteLine($"BAR{bar.Index}: {bar.Type} 0x{bar.Address:X} {bar.Size} bytes");
+
+using (var config = card.OpenConfigurationSpace())
+    Console.WriteLine($"Vendor 0x{config.Read16(0):X4}");
+
+using var bar0 = card.OpenBar(0);          // memory BAR: mapped into the process
+bar0.Write32(0x10, 0x1);
+uint status = bar0.Read32(0x14);
+ulong wide = bar0.Read(0x18, width: 8);   // or Read8/16/32/64, Write8/16/32/64
+```
+
+- **Regions.** `OpenConfigurationSpace()` and `OpenBar(index)` return a `PciRegion` with its `Size`, its widest
+  access (`MaxWidth`: 8, or 4 for I/O BARs) and, for memory BARs, the mapped pointer (`Address`, otherwise 0). A
+  BAR the device does not implement throws `VI_ERROR_INV_SPACE`; an index outside 0 to 5 throws
+  `ArgumentOutOfRangeException`.
+- **Checks.** Every access must be 1, 2, 4 or 8 bytes wide and at most `MaxWidth` (`VI_ERROR_NSUP_WIDTH`), aligned
+  to its width (`VI_ERROR_NSUP_ALIGN_OFFSET`) and inside the region (`VI_ERROR_INV_OFFSET`). Values are in host
+  order, which is the PCI order (little endian) on the hosts Linux runs on; there are no byte-order or increment
+  settings and no block moves, as there are in `PxiSession`.
+- **Permissions.** Opening needs read access to the file; configuration space is opened for writing only at the
+  first write. Denied access throws `VI_ERROR_NPERMISSION`; reading configuration space past the first 64 bytes
+  without root does too.
+- **Ownership.** `OpenBar` does not check `IsAvailableToUserSpace`; writing to a function that a kernel driver owns
+  can disturb that driver.
+- **Threads and disposal.** Accesses may run on several threads at once. `Dispose` lets the accesses that are
+  running finish before a memory BAR is unmapped; later accesses throw `VI_ERROR_INV_OBJECT`. `Address` must not
+  be dereferenced after `Dispose`.
 
 ## Not supported
 
