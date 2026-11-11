@@ -173,8 +173,8 @@ argument.
 ### Without a session
 
 The block, value-list and format helpers are in the standalone `VisaCs.Formatting` library (namespace
-`VisaCs.Formatting`, depends only on `VisaCs.Primitives`), for messages sent over a `NativeSerialPort`, a GPIB
-device or any other transport:
+`VisaCs.Formatting`, which also holds `ByteOrder`; no other dependencies), for messages sent over a
+`NativeSerialPort`, a GPIB device or any other transport:
 
 ```csharp
 byte[] data = Ieee4882.ParseBlock(response);                        // skips text before '#', checks the length
@@ -186,6 +186,10 @@ object?[] idn = VisaFormatter.Parse("%[^,],%[^,]", reply);
 ```
 
 `Ieee4882.TryParseBlockHeader` reads just the header, for code that reads a block piece by piece.
+
+Used on their own, these throw `FormatException` for malformed data, formats or arguments, and
+`NotSupportedException` for an unknown conversion. Through a session the same errors become a `VisaException`
+with `VI_ERROR_INV_FMT` or `VI_ERROR_NSUP_FMT`, with the original exception as `InnerException`.
 
 ## Device operations
 

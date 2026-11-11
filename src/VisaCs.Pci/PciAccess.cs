@@ -13,46 +13,46 @@ internal static class PciAccess
         }
         catch (UnauthorizedAccessException ex)
         {
-            throw new VisaException(VisaStatus.ErrorNoPermission,
+            throw new PciException(PciError.AccessDenied,
                 $"Access to {path} was denied. PCI register access needs root or a udev rule granting access.", ex);
         }
         catch (FileNotFoundException ex)
         {
-            throw new VisaException(VisaStatus.ErrorResourceNotFound, $"{path} does not exist.", ex);
+            throw new PciException(PciError.NotFound, $"{path} does not exist.", ex);
         }
     }
 
     /// <summary>The error for an access to a disposed region.</summary>
-    public static VisaException Closed() => new(VisaStatus.ErrorInvalidObject, "The PCI region is closed.");
+    public static ObjectDisposedException Closed(Exception? inner = null) => new("The PCI region is closed.", inner);
 
-    public static VisaException WidthNotSupported(int width) =>
-        new(VisaStatus.ErrorWidthNotSupported, $"{width}-byte accesses are not supported in this region.");
+    public static ArgumentOutOfRangeException WidthNotSupported(int width, int maxWidth) =>
+        new("width", width, $"{width}-byte accesses are not supported in this region (1, 2, 4 or 8 bytes, at most {maxWidth}).");
 
-    public static VisaException Misaligned(long offset, int width) =>
-        new(VisaStatus.ErrorAlignmentOffsetNotSupported, $"Offset 0x{offset:X} is not aligned to {width} bytes.");
+    public static ArgumentOutOfRangeException Misaligned(long offset, int width) =>
+        new("offset", offset, $"Offset 0x{offset:X} is not aligned to {width} bytes.");
 
-    public static VisaException OutOfRange(long offset, int width, long size) =>
-        new(VisaStatus.ErrorInvalidOffset, $"Offset 0x{offset:X} (+{width}) is outside the {size}-byte region.");
+    public static ArgumentOutOfRangeException OutOfRange(long offset, int width, long size) =>
+        new("offset", offset, $"Offset 0x{offset:X} (+{width}) is outside the {size}-byte region.");
 
-    public static VisaException BarNotImplemented(int index) =>
-        new(VisaStatus.ErrorInvalidSpace, $"BAR{index} is not implemented by this device.");
+    public static PciException BarNotImplemented(int index) =>
+        new(PciError.BarNotImplemented, $"BAR{index} is not implemented by this device.");
 
-    public static VisaException ShortRead(bool isConfig, long offset) => isConfig
-        ? new VisaException(VisaStatus.ErrorNoPermission, $"Configuration space beyond the first 64 bytes needs root (offset 0x{offset:X}).")
-        : new VisaException(VisaStatus.ErrorBusError, $"Short PCI read at offset 0x{offset:X}.");
+    public static PciException ShortRead(bool isConfig, long offset) => isConfig
+        ? new PciException(PciError.AccessDenied, $"Configuration space beyond the first 64 bytes needs root (offset 0x{offset:X}).")
+        : new PciException(PciError.BusError, $"Short PCI read at offset 0x{offset:X}.");
 
-    public static VisaException MapError(string path, Exception ex) => ex is UnauthorizedAccessException
-        ? new VisaException(VisaStatus.ErrorNoPermission,
+    public static PciException MapError(string path, Exception ex) => ex is UnauthorizedAccessException
+        ? new PciException(PciError.AccessDenied,
             $"Access to {path} was denied. PCI BAR access needs root or a udev rule granting access to the resource files.", ex)
-        : new VisaException(VisaStatus.ErrorResourceBusy, $"Cannot map {path}: {ex.Message}", ex);
+        : new PciException(PciError.MapFailed, $"Cannot map {path}: {ex.Message}", ex);
 
     public static bool IsAccessError(Exception ex) => ex is ObjectDisposedException or UnauthorizedAccessException or IOException;
 
-    /// <summary>The VISA error for a failed file access (see <see cref="IsAccessError"/>).</summary>
-    public static VisaException Translate(Exception ex, string path, long offset) => ex switch
+    /// <summary>The error for a failed file access (see <see cref="IsAccessError"/>).</summary>
+    public static Exception Translate(Exception ex, string path, long offset) => ex switch
     {
-        ObjectDisposedException => Closed(),
-        UnauthorizedAccessException => new VisaException(VisaStatus.ErrorNoPermission, $"Access to {path} at offset 0x{offset:X} was denied.", ex),
-        _ => new VisaException(VisaStatus.ErrorIO, $"PCI access to {path} at offset 0x{offset:X} failed: {ex.Message}", ex),
+        ObjectDisposedException => Closed(ex),
+        UnauthorizedAccessException => new PciException(PciError.AccessDenied, $"Access to {path} at offset 0x{offset:X} was denied.", ex),
+        _ => new PciException(PciError.IOError, $"PCI access to {path} at offset 0x{offset:X} failed: {ex.Message}", ex),
     };
 }

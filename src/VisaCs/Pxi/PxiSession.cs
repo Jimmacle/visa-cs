@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using VisaCs.Formatting;
+using VisaCs.Internal;
 using VisaCs.Pci;
 
 namespace VisaCs;
@@ -128,12 +130,19 @@ public sealed class PxiSession : VisaSession
             if (_closed) throw Closed();
             if (_regions.TryGetValue(space, out var region)) return region;
             if (!OperatingSystem.IsLinux()) throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open."); // never opens elsewhere
-            if (space == AddressSpace.PxiConfig)
-                region = Device.OpenConfigurationSpace();
-            else if (space is >= AddressSpace.PxiBar0 and <= AddressSpace.PxiBar5)
-                region = Device.OpenBar(space - AddressSpace.PxiBar0);
-            else
+            if (space is not (AddressSpace.PxiConfig or (>= AddressSpace.PxiBar0 and <= AddressSpace.PxiBar5)))
                 throw new VisaException(VisaStatus.ErrorInvalidSpace, $"Address space {space} is not valid for PXI.");
+            var device = Device;
+            try
+            {
+                region = space == AddressSpace.PxiConfig
+                    ? device.OpenConfigurationSpace()
+                    : device.OpenBar(space - AddressSpace.PxiBar0);
+            }
+            catch (Exception ex) when (PciErrorMapping.IsPciError(ex))
+            {
+                throw PciErrorMapping.ToVisa(ex);
+            }
             _regions[space] = region;
             return region;
         }
@@ -162,11 +171,31 @@ public sealed class PxiSession : VisaSession
             _ => value,
         };
 
-    private ulong In(AddressSpace space, long offset, int width) =>
-        Swap(Checked(space, offset, width).Read(offset, width), width, SourceByteOrder);
+    private ulong In(AddressSpace space, long offset, int width)
+    {
+        var region = Checked(space, offset, width);
+        try
+        {
+            return Swap(region.Read(offset, width), width, SourceByteOrder);
+        }
+        catch (Exception ex) when (PciErrorMapping.IsPciError(ex))
+        {
+            throw PciErrorMapping.ToVisa(ex);
+        }
+    }
 
-    private void Out(AddressSpace space, long offset, int width, ulong value) =>
-        Checked(space, offset, width).Write(offset, width, Swap(value, width, DestinationByteOrder));
+    private void Out(AddressSpace space, long offset, int width, ulong value)
+    {
+        var region = Checked(space, offset, width);
+        try
+        {
+            region.Write(offset, width, Swap(value, width, DestinationByteOrder));
+        }
+        catch (Exception ex) when (PciErrorMapping.IsPciError(ex))
+        {
+            throw PciErrorMapping.ToVisa(ex);
+        }
+    }
 
     /// <summary>Reads an 8-bit register (viIn8).</summary>
     public byte In8(AddressSpace space, long offset) => (byte)In(space, offset, 1);
@@ -192,12 +221,19 @@ public sealed class PxiSession : VisaSession
         var region = Checked(space, offset, width, SourceIncrement ? destination.Length : 1);
         var bytes = MemoryMarshal.AsBytes(destination);
         Span<byte> eight = stackalloc byte[8];
-        for (int i = 0; i < destination.Length; i++)
+        try
         {
-            ulong v = Swap(region.Read(SourceIncrement ? offset + (long)i * width : offset, width), width, SourceByteOrder);
-            // Write the low 'width' bytes (TryWriteBytes on a narrower span would silently write nothing).
-            BinaryPrimitives.WriteUInt64LittleEndian(eight, v);
-            eight[..width].CopyTo(bytes.Slice(i * width, width));
+            for (int i = 0; i < destination.Length; i++)
+            {
+                ulong v = Swap(region.Read(SourceIncrement ? offset + (long)i * width : offset, width), width, SourceByteOrder);
+                // Write the low 'width' bytes (TryWriteBytes on a narrower span would silently write nothing).
+                BinaryPrimitives.WriteUInt64LittleEndian(eight, v);
+                eight[..width].CopyTo(bytes.Slice(i * width, width));
+            }
+        }
+        catch (Exception ex) when (PciErrorMapping.IsPciError(ex))
+        {
+            throw PciErrorMapping.ToVisa(ex);
         }
     }
 
@@ -207,12 +243,19 @@ public sealed class PxiSession : VisaSession
         var region = Checked(space, offset, width, DestinationIncrement ? source.Length : 1);
         var bytes = MemoryMarshal.AsBytes(source);
         Span<byte> eight = stackalloc byte[8];
-        for (int i = 0; i < source.Length; i++)
+        try
         {
-            eight.Clear();
-            bytes.Slice(i * width, width).CopyTo(eight);
-            ulong v = BitConverter.ToUInt64(eight);
-            region.Write(DestinationIncrement ? offset + (long)i * width : offset, width, Swap(v, width, DestinationByteOrder));
+            for (int i = 0; i < source.Length; i++)
+            {
+                eight.Clear();
+                bytes.Slice(i * width, width).CopyTo(eight);
+                ulong v = BitConverter.ToUInt64(eight);
+                region.Write(DestinationIncrement ? offset + (long)i * width : offset, width, Swap(v, width, DestinationByteOrder));
+            }
+        }
+        catch (Exception ex) when (PciErrorMapping.IsPciError(ex))
+        {
+            throw PciErrorMapping.ToVisa(ex);
         }
     }
 

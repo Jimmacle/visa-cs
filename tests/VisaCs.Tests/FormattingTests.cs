@@ -1,5 +1,6 @@
 using System.Text;
 using VisaCs.Formatting;
+using VisaCs.Internal;
 using VisaCs.Simulation;
 
 namespace VisaCs.Tests;
@@ -100,14 +101,48 @@ public class VisaFormatterTests
     [InlineData("%[abc")]
     public void RejectsBadFormats(string format)
     {
-        Assert.ThrowsAny<VisaException>(() => VisaFormatter.FormatString(format, 1));
+        var ex = Assert.ThrowsAny<Exception>(() => VisaFormatter.FormatString(format, 1));
+        Assert.True(ex is FormatException or NotSupportedException, ex.GetType().Name);
+        Assert.False(VisaFormatter.HasBinaryConversion(format));
     }
 
     [Fact]
     public void RejectsMissingArguments()
     {
-        Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => VisaFormatter.FormatString("%d %d", 1)).Status);
-        Assert.Equal(VisaStatus.ErrorFormatNotSupported, Assert.Throws<VisaException>(() => VisaFormatter.FormatString("%k", 1)).Status);
+        Assert.Throws<FormatException>(() => VisaFormatter.FormatString("%d %d", 1));
+        Assert.Throws<NotSupportedException>(() => VisaFormatter.FormatString("%k", 1));
+    }
+
+    [Fact]
+    public void DoesNotWrapItsOwnErrorsTwice()
+    {
+        // "Not enough arguments" is raised where BCL parse errors of an argument are wrapped; it must stay as it is.
+        var ex = Assert.Throws<FormatException>(() => VisaFormatter.FormatString("%d %d", 1));
+        Assert.Null(ex.InnerException);
+        var wrapped = Assert.Throws<FormatException>(() => VisaFormatter.FormatString("%d", "abc"));
+        Assert.IsType<FormatException>(wrapped.InnerException);
+    }
+}
+
+/// <summary>The VISA statuses MessageBasedSession reports for VisaCs.Formatting errors.</summary>
+public class FormattingErrorMappingTests
+{
+    [Fact]
+    public void MapsFormattingErrorsToVisaStatuses()
+    {
+        var invalid = new FormatException("bad");
+        Assert.True(FormattingErrorMapping.IsFormattingError(invalid));
+        var mapped = FormattingErrorMapping.ToVisa(invalid);
+        Assert.Equal(VisaStatus.ErrorInvalidFormat, mapped.Status);
+        Assert.Same(invalid, mapped.InnerException);
+
+        var unsupported = new NotSupportedException("unknown");
+        Assert.True(FormattingErrorMapping.IsFormattingError(unsupported));
+        mapped = FormattingErrorMapping.ToVisa(unsupported);
+        Assert.Equal(VisaStatus.ErrorFormatNotSupported, mapped.Status);
+        Assert.Same(unsupported, mapped.InnerException);
+
+        Assert.False(FormattingErrorMapping.IsFormattingError(new IOException()));
     }
 }
 
@@ -147,6 +182,23 @@ public sealed class FormattedIOSessionTests(SimulatorFixture fixture) : IClassFi
 
         var floats = session.Queryf<float[]>("DATA:FLOAT? 8\n", "%!olzb");
         Assert.Equal(3.5f, floats[7]);
+        Assert.Equal(fixture.Instrument.Identity, session.Query("*IDN?"));
+    }
+
+    [Fact]
+    public void ReportsFormatErrorsAsVisaStatuses()
+    {
+        using var rm = fixture.CreateResourceManager();
+        using var session = rm.Open(fixture.Simulator.SocketResource);
+        session.TimeoutMilliseconds = 5000;
+        Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => session.Printf("%d %d\n", 1)).Status);
+        Assert.Equal(VisaStatus.ErrorFormatNotSupported, Assert.Throws<VisaException>(() => session.Printf("%k\n", 1)).Status);
+        var ex = Assert.Throws<VisaException>(() => session.Queryf("*IDN?\n", "%,"));
+        Assert.Equal(VisaStatus.ErrorInvalidFormat, ex.Status);
+        Assert.IsType<FormatException>(ex.InnerException);
+        session.Printf("DATA:STORE %b\n", new byte[] { 1, 2, 3 });
+        Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => session.QueryBinaryValues<int>("DATA:STORE?")).Status);
+        Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => session.QueryAsciiValues<int>("ECHO? 1,abc")).Status);
         Assert.Equal(fixture.Instrument.Identity, session.Query("*IDN?"));
     }
 }

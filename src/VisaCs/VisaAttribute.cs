@@ -91,11 +91,11 @@ public enum VisaAttribute : uint
     // Register based
     /// <summary>VI_ATTR_DEST_ACCESS_PRIV. Not supported.</summary>
     DestinationAccessPrivilege = 0x3FFF0039,
-    /// <summary>VI_ATTR_DEST_BYTE_ORDER: byte order of register writes (PXI). <see cref="ByteOrder"/>, RW. Typed: <see cref="PxiSession.DestinationByteOrder"/>.</summary>
+    /// <summary>VI_ATTR_DEST_BYTE_ORDER: byte order of register writes (PXI). <see cref="Formatting.ByteOrder"/>, RW. Typed: <see cref="PxiSession.DestinationByteOrder"/>.</summary>
     DestinationByteOrder = 0x3FFF003A,
     /// <summary>VI_ATTR_SRC_ACCESS_PRIV. Not supported.</summary>
     SourceAccessPrivilege = 0x3FFF003C,
-    /// <summary>VI_ATTR_SRC_BYTE_ORDER: byte order of register reads (PXI). <see cref="ByteOrder"/>, RW. Typed: <see cref="PxiSession.SourceByteOrder"/>.</summary>
+    /// <summary>VI_ATTR_SRC_BYTE_ORDER: byte order of register reads (PXI). <see cref="Formatting.ByteOrder"/>, RW. Typed: <see cref="PxiSession.SourceByteOrder"/>.</summary>
     SourceByteOrder = 0x3FFF003D,
     /// <summary>VI_ATTR_SRC_INCREMENT: 1 if block reads advance through registers, 0 to read one register repeatedly (PXI). <see cref="int"/>, RW. Typed: <see cref="PxiSession.SourceIncrement"/>.</summary>
     SourceIncrement = 0x3FFF0040,
@@ -103,7 +103,7 @@ public enum VisaAttribute : uint
     DestinationIncrement = 0x3FFF0041,
     /// <summary>VI_ATTR_WIN_ACCESS_PRIV. Not supported.</summary>
     WindowAccessPrivilege = 0x3FFF0045,
-    /// <summary>VI_ATTR_WIN_BYTE_ORDER: byte order of accesses through a mapped window (PXI). <see cref="ByteOrder"/>, RW. Typed: <see cref="PxiSession.WindowByteOrder"/>.</summary>
+    /// <summary>VI_ATTR_WIN_BYTE_ORDER: byte order of accesses through a mapped window (PXI). <see cref="Formatting.ByteOrder"/>, RW. Typed: <see cref="PxiSession.WindowByteOrder"/>.</summary>
     WindowByteOrder = 0x3FFF0047,
     /// <summary>VI_ATTR_WIN_BASE_ADDR (64-bit form): offset of the mapped window, 0 when none is mapped (PXI). <see cref="long"/>, R. Typed: <see cref="PxiSession.Window"/>.</summary>
     WindowBaseAddress = 0x3FFF009B,

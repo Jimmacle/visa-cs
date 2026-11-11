@@ -21,7 +21,7 @@ public abstract partial class MessageBasedSession
     /// session.Printf("DATA %,3d\n", new[] { 1, 2, 3 });
     /// session.Printf("WAV:DATA %b\n", samples); // IEEE 488.2 block of bytes</code></example>
     public void Printf(string format, params object?[] args) =>
-        Write(VisaFormatter.Format(format, SynchronousArguments(args), Encoding));
+        Write(FormatMessage(format, SynchronousArguments(args), out _));
 
     /// <summary>
     /// Formats and writes a message (viPrintf) without holding a thread; see <see cref="Printf"/>. A
@@ -35,7 +35,20 @@ public abstract partial class MessageBasedSession
 
     /// <summary>Formats and writes a message (viPrintf) without holding a thread; see <see cref="Printf"/>.</summary>
     public Task PrintfAsync(string format, CancellationToken cancellationToken, params object?[] args) =>
-        WriteAsync(VisaFormatter.Format(format, CheckArguments(args), Encoding), cancellationToken).AsTask();
+        WriteAsync(FormatMessage(format, CheckArguments(args), out _), cancellationToken).AsTask();
+
+    /// <summary>Formats a message with <see cref="VisaFormatter"/>, reporting format errors as VISA errors.</summary>
+    private byte[] FormatMessage(string format, IReadOnlyList<object?> args, out int argumentsUsed)
+    {
+        try
+        {
+            return VisaFormatter.Format(format, args, Encoding, out argumentsUsed);
+        }
+        catch (Exception ex) when (FormattingErrorMapping.IsFormattingError(ex))
+        {
+            throw FormattingErrorMapping.ToVisa(ex);
+        }
+    }
 
     /// <summary>
     /// Reads a response and parses it (viScanf); see <see cref="VisaFormatter"/> for the format syntax.
@@ -67,7 +80,7 @@ public abstract partial class MessageBasedSession
         var data = VisaFormatter.HasBinaryConversion(format)
             ? await ReadMessageWithBlocksAsync(cancellationToken, async).ConfigureAwait(false)
             : await ReadToEndUnguardedAsync(cancellationToken, async).ConfigureAwait(false);
-        return VisaFormatter.Parse(format, data, args);
+        return FormattingErrorMapping.Call((format, data, args), static s => VisaFormatter.Parse(s.format, s.data, s.args));
     }
 
     /// <summary>
@@ -119,7 +132,7 @@ public abstract partial class MessageBasedSession
 
     private ValueTask<object?[]> QueryfAsync(string writeFormat, string readFormat, object?[] args, CancellationToken cancellationToken, bool async)
     {
-        var message = VisaFormatter.Format(writeFormat, args, Encoding, out int used);
+        var message = FormatMessage(writeFormat, args, out int used);
         var readArgs = new ArraySegment<object?>(args, used, args.Length - used);
         return ExecuteAsync((message, readFormat, readArgs), static async (s, a, ct, async) =>
         {

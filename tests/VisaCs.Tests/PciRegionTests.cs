@@ -54,7 +54,7 @@ public sealed class PciRegionTests(FakePciFixture fixture) : IClassFixture<FakeP
         Assert.Equal((256L, 4, (nint)0), (bar1.Size, bar1.MaxWidth, bar1.Address));
         bar1.Write16(0x20, 0x5AA5);
         Assert.Equal(0x5AA5, bar1.Read16(0x20));
-        Assert.Equal(VisaStatus.ErrorWidthNotSupported, Assert.Throws<VisaException>(() => bar1.Read64(0)).Status);
+        Assert.Equal("width", Assert.Throws<ArgumentOutOfRangeException>(() => bar1.Read64(0)).ParamName);
     }
 
     [Fact]
@@ -62,21 +62,21 @@ public sealed class PciRegionTests(FakePciFixture fixture) : IClassFixture<FakeP
     {
         if (!fixture.Available) return;
         var device = Device();
-        Assert.Equal(VisaStatus.ErrorInvalidSpace, Assert.Throws<VisaException>(() => device.OpenBar(2)).Status);
+        Assert.Equal(PciError.BarNotImplemented, Assert.Throws<PciException>(() => device.OpenBar(2)).Error);
         Assert.Throws<ArgumentOutOfRangeException>(() => device.OpenBar(6));
         var bar0 = device.OpenBar(0);
-        Assert.Equal(VisaStatus.ErrorInvalidOffset, Assert.Throws<VisaException>(() => bar0.Read32(4096)).Status);
-        Assert.Equal(VisaStatus.ErrorInvalidOffset, Assert.Throws<VisaException>(() => bar0.Write64(4096, 0)).Status);
-        Assert.Equal(VisaStatus.ErrorAlignmentOffsetNotSupported, Assert.Throws<VisaException>(() => bar0.Read32(2)).Status);
-        Assert.Equal(VisaStatus.ErrorAlignmentOffsetNotSupported, Assert.Throws<VisaException>(() => bar0.Read32(-4)).Status);
-        Assert.Equal(VisaStatus.ErrorWidthNotSupported, Assert.Throws<VisaException>(() => bar0.Read(0, 3)).Status);
+        Assert.Equal("offset", Assert.Throws<ArgumentOutOfRangeException>(() => bar0.Read32(4096)).ParamName);
+        Assert.Equal("offset", Assert.Throws<ArgumentOutOfRangeException>(() => bar0.Write64(4096, 0)).ParamName);
+        Assert.Equal("offset", Assert.Throws<ArgumentOutOfRangeException>(() => bar0.Read32(2)).ParamName);
+        Assert.Equal("offset", Assert.Throws<ArgumentOutOfRangeException>(() => bar0.Read32(-4)).ParamName);
+        Assert.Equal("width", Assert.Throws<ArgumentOutOfRangeException>(() => bar0.Read(0, 3)).ParamName);
         bar0.Dispose();
         bar0.Dispose(); // a second Dispose does nothing
-        Assert.Equal(VisaStatus.ErrorInvalidObject, Assert.Throws<VisaException>(() => bar0.Read32(0)).Status);
+        Assert.Throws<ObjectDisposedException>(() => bar0.Read32(0));
         var config = device.OpenConfigurationSpace();
         config.Dispose();
-        Assert.Equal(VisaStatus.ErrorInvalidObject, Assert.Throws<VisaException>(() => config.Read16(0)).Status);
-        Assert.Equal(VisaStatus.ErrorInvalidObject, Assert.Throws<VisaException>(() => config.Write16(0x40, 1)).Status);
+        Assert.Throws<ObjectDisposedException>(() => config.Read16(0));
+        Assert.Throws<ObjectDisposedException>(() => config.Write16(0x40, 1));
     }
 
     [Fact]
@@ -85,6 +85,8 @@ public sealed class PciRegionTests(FakePciFixture fixture) : IClassFixture<FakeP
         if (!fixture.Available || Environment.UserName == "root") return; // root may write the read-only file
         using var config = Device("0000:03:13.0").OpenConfigurationSpace();
         Assert.Equal(0x1234, config.Read16(0));
-        Assert.Equal(VisaStatus.ErrorNoPermission, Assert.Throws<VisaException>(() => config.Write16(0x40, 1)).Status);
+        var ex = Assert.Throws<PciException>(() => config.Write16(0x40, 1));
+        Assert.Equal(PciError.AccessDenied, ex.Error);
+        Assert.IsType<UnauthorizedAccessException>(ex.InnerException);
     }
 }

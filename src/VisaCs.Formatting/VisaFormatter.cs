@@ -29,9 +29,9 @@ namespace VisaCs.Formatting;
 /// accept NR2/NR3 input such as <c>1.000E+00</c>, rounded to the nearest integer.
 /// </para>
 /// <para>
-/// Errors in a format or its arguments throw <see cref="VisaException"/> with VI_ERROR_INV_FMT (or VI_ERROR_NSUP_FMT
-/// for unknown conversions). Input that stops matching does not throw: Scanf returns the values converted up to that
-/// point.
+/// Errors in a format or its arguments throw <see cref="FormatException"/> (<see cref="NotSupportedException"/> for
+/// unknown conversions); <c>MessageBasedSession</c> reports them as VI_ERROR_INV_FMT and VI_ERROR_NSUP_FMT. Input
+/// that stops matching does not throw: Scanf returns the values converted up to that point.
 /// </para>
 /// </remarks>
 public static partial class VisaFormatter
@@ -76,7 +76,7 @@ public static partial class VisaFormatter
             }
             return false;
         }
-        catch (VisaException)
+        catch (Exception ex) when (ex is FormatException or NotSupportedException)
         {
             return false;
         }
@@ -218,7 +218,7 @@ public static partial class VisaFormatter
             : throw Invalid($"Number too large in format: '{s[start..i]}'.");
     }
 
-    private static VisaException Invalid(string message, Exception? inner = null) => FormatErrors.Invalid(message, inner);
+    private static FormatException Invalid(string message, Exception? inner = null) => FormatErrors.Invalid(message, inner);
 
     private static int ElementSize(string size) => size switch
     {

@@ -288,7 +288,7 @@ public class StatusAndAttributeNameTests
         var big = new byte[] { 0x00, 0x01, 0x01, 0x00 };
         Assert.Equal(new short[] { 1, 256 }, Ieee4882.BytesToValues<short>(big, ByteOrder.BigEndian));
         Assert.Equal(new short[] { 256, 1 }, Ieee4882.BytesToValues<short>(big, ByteOrder.LittleEndian));
-        Assert.Throws<VisaException>(() => Ieee4882.BytesToValues<int>(new byte[3], ByteOrder.LittleEndian));
+        Assert.Throws<FormatException>(() => Ieee4882.BytesToValues<int>(new byte[3], ByteOrder.LittleEndian));
         // Element size is the in-memory size: 2 bytes for char and 1 for bool (Marshal.SizeOf would say 1 and 4).
         Assert.Equal("AB".ToCharArray(), Ieee4882.BytesToValues<char>([0x00, 0x41, 0x00, 0x42], ByteOrder.BigEndian));
         Assert.Equal(new[] { true, false, true }, Ieee4882.BytesToValues<bool>([1, 0, 1], ByteOrder.LittleEndian));
@@ -297,8 +297,8 @@ public class StatusAndAttributeNameTests
         Assert.Equal(new[] { 1L, -2L, 3L }, Ieee4882.ParseValues<long>(" 1 ,, \t,-2,3,", ','));
         Assert.Equal(new[] { 4.5, 6.0 }, Ieee4882.ParseValues<double>("4.5 6", ' '));
         Assert.Empty(Ieee4882.ParseValues<double>("", ','));
-        Assert.Throws<VisaException>(() => Ieee4882.ParseValues<int>("1,abc,3", ','));
-        Assert.Throws<VisaException>(() => Ieee4882.ParseValues<double>("1.5,NaNx", ','));
+        Assert.Throws<FormatException>(() => Ieee4882.ParseValues<int>("1,abc,3", ','));
+        Assert.Throws<FormatException>(() => Ieee4882.ParseValues<double>("1.5,NaNx", ','));
     }
 
     [Fact]
@@ -335,7 +335,7 @@ public class StatusAndAttributeNameTests
     {
         var bytes = Encoding.ASCII.GetBytes(message);
         Assert.False(Ieee4882.TryParseBlock(bytes, out _));
-        Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => Ieee4882.ParseBlock(bytes)).Status);
+        Assert.Throws<FormatException>(() => Ieee4882.ParseBlock(bytes));
     }
 
     [Fact]

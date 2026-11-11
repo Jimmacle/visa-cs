@@ -1,4 +1,5 @@
 using System.Text;
+using VisaCs.Formatting;
 
 namespace VisaCs.Tests;
 

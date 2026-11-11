@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using VisaCs.Gpib;
 using VisaCs.Internal;
 using VisaCs.Lan;
+using VisaCs.Pci;
 using VisaCs.Serial;
 using VisaCs.Usb;
 

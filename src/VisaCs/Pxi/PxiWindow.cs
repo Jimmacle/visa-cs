@@ -1,3 +1,4 @@
+using VisaCs.Internal;
 using VisaCs.Pci;
 
 namespace VisaCs;
@@ -42,13 +43,27 @@ public sealed class PxiWindow : IDisposable
     private ulong Peek(long offset, int width)
     {
         Check(offset, width);
-        return PxiSession.Swap(_region.Read(Offset + offset, width), width, _session.WindowByteOrder);
+        try
+        {
+            return PxiSession.Swap(_region.Read(Offset + offset, width), width, _session.WindowByteOrder);
+        }
+        catch (Exception ex) when (PciErrorMapping.IsPciError(ex))
+        {
+            throw PciErrorMapping.ToVisa(ex);
+        }
     }
 
     private void Poke(long offset, int width, ulong value)
     {
         Check(offset, width);
-        _region.Write(Offset + offset, width, PxiSession.Swap(value, width, _session.WindowByteOrder));
+        try
+        {
+            _region.Write(Offset + offset, width, PxiSession.Swap(value, width, _session.WindowByteOrder));
+        }
+        catch (Exception ex) when (PciErrorMapping.IsPciError(ex))
+        {
+            throw PciErrorMapping.ToVisa(ex);
+        }
     }
 
     private void Check(long offset, int width)
