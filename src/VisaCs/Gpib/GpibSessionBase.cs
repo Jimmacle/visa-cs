@@ -40,17 +40,21 @@ public abstract class GpibSessionBase : MessageBasedSession
 
     private protected override ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
     {
-        if (async) return IO.WriteAsync(data, end, GpibTimeouts.Milliseconds(deadline), deadline.CancellationToken);
-        IO.Write(data.Span, end, GpibTimeouts.Milliseconds(deadline));
+        var io = IO;
+        int timeout = GpibTimeouts.Milliseconds(deadline);
+        if (async) return GpibErrorMapping.CallAsync(() => io.WriteAsync(data, end, timeout, deadline.CancellationToken));
+        GpibErrorMapping.Call(() => io.Write(data.Span, end, timeout));
         return default;
     }
 
     private protected override async ValueTask<FillResult> FillCoreAsync(Memory<byte> target, Deadline deadline, bool async)
     {
         byte? termChar = EffectiveTermChar is >= 0 and var c ? (byte)c : null;
+        var io = IO;
+        int timeout = GpibTimeouts.Milliseconds(deadline);
         var result = async
-            ? await IO.ReadAsync(target, termChar, GpibTimeouts.Milliseconds(deadline), deadline.CancellationToken).ConfigureAwait(false)
-            : IO.Read(target.Span, termChar, GpibTimeouts.Milliseconds(deadline));
+            ? await GpibErrorMapping.CallAsync(() => io.ReadAsync(target, termChar, timeout, deadline.CancellationToken)).ConfigureAwait(false)
+            : GpibErrorMapping.Call(() => io.Read(target.Span, termChar, timeout));
         return new FillResult(result.Count, result.End);
     }
 
@@ -65,8 +69,9 @@ public abstract class GpibSessionBase : MessageBasedSession
     private protected override ValueTask OnEventDisabledAsync(EventType eventType, bool async) =>
         Interlocked.Exchange(ref _srq, null) is { } srq ? srq.StopAsync(async) : default;
 
-    /// <summary>The state of one bus line, from the board's line status.</summary>
-    private protected static LineState LineFrom(GpibLineStatus lines, GpibLines line) => lines.IsAsserted(line) switch
+    /// <summary>The state of one bus line of <paramref name="board"/>.</summary>
+    private protected static LineState LineFrom(IGpibBoard board, GpibLines line) =>
+        GpibErrorMapping.Call(board.GetLines).IsAsserted(line) switch
     {
         null => LineState.Unknown,
         true => LineState.Asserted,
@@ -148,8 +153,9 @@ internal static class GpibTimeouts
 
     public static ValueTask SendCommandAsync(IGpibBoard board, ReadOnlyMemory<byte> bytes, Deadline deadline, bool async)
     {
-        if (async) return board.SendCommandAsync(bytes, Milliseconds(deadline), deadline.CancellationToken);
-        board.SendCommand(bytes.Span, Milliseconds(deadline));
+        int timeout = Milliseconds(deadline);
+        if (async) return GpibErrorMapping.CallAsync(() => board.SendCommandAsync(bytes, timeout, deadline.CancellationToken));
+        GpibErrorMapping.Call(() => board.SendCommand(bytes.Span, timeout));
         return default;
     }
 }

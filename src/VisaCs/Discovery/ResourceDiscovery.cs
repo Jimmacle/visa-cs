@@ -77,10 +77,10 @@ internal static class ResourceDiscovery
     {
         var result = new List<ResourceInfo>();
         if (driver is null) return result;
-        foreach (int board in driver.ListBoards())
+        foreach (int board in GpibErrorMapping.Call(driver.ListBoards))
         {
             result.Add(Describe(ResourceName.Parse($"GPIB{board}::INTFC"), $"GPIB board {board}", new Dictionary<VisaAttribute, object>()));
-            foreach (var (pad, sad) in driver.FindListeners(board))
+            foreach (var (pad, sad) in GpibErrorMapping.Call(() => driver.FindListeners(board)))
             {
                 var name = ResourceName.Parse(sad is { } s ? $"GPIB{board}::{pad}::{s}::INSTR" : $"GPIB{board}::{pad}::INSTR");
                 result.Add(Describe(name, null, new Dictionary<VisaAttribute, object>

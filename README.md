@@ -81,9 +81,9 @@ The hardware access layers are separate libraries, so they can be used without t
 | `VisaCs` | VISA itself: `ResourceManager`, sessions (VXI-11, HiSLIP, raw socket, VICP, USBTMC, serial, GPIB, PXI), resource names, find expressions | the libraries below |
 | `VisaCs.Serial` | `NativeSerialPort`: serial ports through the Win32 comm API or termios, without `System.IO.Ports` ([usage](docs/serial.md#without-visa)) | — |
 | `VisaCs.Usb` | `IUsbBackend` and its WinUSB, usbfs and libusb implementations: enumeration and control, bulk and interrupt transfers; `UsbTmcDevice`, a USBTMC/USB488 client ([usage](docs/usb.md#without-visa)) | `VisaCs.Primitives` |
-| `VisaCs.Gpib` | `Ni488Driver`: GPIB through any NI-488.2 compatible library, bound at run time ([usage](docs/gpib.md#without-visa)) | `VisaCs.Primitives` |
-| `VisaCs.Formatting` | `Ieee4882` (definite-length blocks, binary arrays with a byte order, ASCII value lists) and `VisaFormatter` (the VISA printf/scanf format language) ([usage](docs/using-sessions.md#without-a-session)) | |
-| `VisaCs.Pci` | `PciDeviceInfo` and `PciRegion`: PCI(e) configuration space and memory and I/O BARs through Linux sysfs ([usage](docs/pxi.md#without-visa)) | |
+| `VisaCs.Gpib` | `Ni488Driver`: GPIB through any NI-488.2 compatible library, bound at run time ([usage](docs/gpib.md#without-visa)) | — |
+| `VisaCs.Formatting` | `Ieee4882` (definite-length blocks, binary arrays with a byte order, ASCII value lists) and `VisaFormatter` (the VISA printf/scanf format language) ([usage](docs/using-sessions.md#without-a-session)) | — |
+| `VisaCs.Pci` | `PciDeviceInfo` and `PciRegion`: PCI(e) configuration space and memory and I/O BARs through Linux sysfs ([usage](docs/pxi.md#without-visa)) | — |
 | `VisaCs.Lan` | `Vxi11Client`, `HislipClient` (incl. TLS and SASL), `VicpClient`, ONC RPC and XDR, mDNS and VXI-11 discovery ([usage](docs/tcpip.md#without-visa)) | `VisaCs.Primitives` |
 | `VisaCs.Primitives` | `VisaStatus` and the `VisaException` types the other libraries report errors with | |
 | `VisaCs.Simulation` | Simulated instruments and protocol servers for testing without hardware | `VisaCs`, `VisaCs.Lan` |

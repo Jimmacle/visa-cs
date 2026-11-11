@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using VisaCs.Gpib.Native;
-using VisaCs.Internal;
 using static VisaCs.Gpib.Native.Ni488;
 
 namespace VisaCs.Gpib;
@@ -81,8 +80,7 @@ public sealed unsafe partial class Ni488Driver
         var transfer = new Transfer(owner, kind);
         if (!state.TryReserve(transfer))
         {
-            return Task.FromException<GpibReadResult>(new VisaException(VisaStatus.ErrorInProgress,
-                "Another asynchronous GPIB transfer is in progress on this descriptor."));
+            return Task.FromException<GpibReadResult>(GpibErrors.TransferInProgress());
         }
 
         int status, error = 0;
@@ -255,8 +253,7 @@ public sealed unsafe partial class Ni488Driver
     private static void Cancel(Transfer transfer, CancellationToken cancellationToken)
     {
         if (!TryStop(transfer, out int count)) return;
-        var stopped = new VisaTimeoutException($"GPIB {transfer.Operation} was canceled.") { BytesTransferred = count };
-        transfer.Driver.Fail(transfer, AsyncIO.Canceled(stopped, cancellationToken));
+        transfer.Driver.Fail(transfer, GpibErrors.Canceled($"GPIB {transfer.Operation} was canceled.", cancellationToken, count));
     }
 
     /// <summary>Ends everything a disposed object has pending, then closes it (after its running blocking call, if any).</summary>

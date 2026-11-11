@@ -89,7 +89,7 @@ public sealed unsafe partial class Ni488Driver : IGpibDriver
     }
 
     private Ni488Api RequireApi() => Api
-        ?? throw new VisaException(VisaStatus.ErrorLibraryNotFound, $"No NI-488.2 compatible GPIB library was loaded ({LoadError}).");
+        ?? throw GpibErrors.LibraryNotFound(LoadError);
 
     internal static void Check(Ni488Api api, int status, string operation)
     {
@@ -100,11 +100,7 @@ public sealed unsafe partial class Ni488Driver : IGpibDriver
     /// The exception for an operation that failed with <paramref name="iberr"/>. Read iberr on the thread that made
     /// the call: the library keeps it per thread.
     /// </summary>
-    internal static VisaException Error(int iberr, string operation, int count = 0)
-    {
-        if (iberr == EABO) return new VisaTimeoutException($"GPIB {operation} timed out.") { BytesTransferred = count, NativeError = iberr };
-        return new VisaException(Status(iberr), $"GPIB {operation} failed: {Describe(iberr)}.") { NativeError = iberr };
-    }
+    internal static Exception Error(int iberr, string operation, int count = 0) => GpibErrors.FromIberr(iberr, operation, count);
 
     internal static void CheckAddress(int primaryAddress, int? secondaryAddress)
     {
@@ -138,7 +134,8 @@ public sealed unsafe partial class Ni488Driver : IGpibDriver
     /// <inheritdoc/>
     /// <remarks>
     /// Asks every primary address except the board's own with ibln (about 30 ms each, so about 1 s per board).
-    /// Secondary addresses are not scanned. Throws <see cref="VisaStatus.ErrorLibraryNotFound"/> when no library is loaded.
+    /// Secondary addresses are not scanned. Throws <see cref="GpibException"/>
+    /// (<see cref="GpibError.LibraryNotFound"/>) when no library is loaded.
     /// </remarks>
     public IReadOnlyList<(int Primary, int? Secondary)> FindListeners(int board)
     {
@@ -161,7 +158,7 @@ public sealed unsafe partial class Ni488Driver : IGpibDriver
     /// <inheritdoc/>
     /// <remarks>
     /// Does not talk to the bus: success does not mean that a device answers at the address (the first write then
-    /// fails with <see cref="VisaStatus.ErrorNoListeners"/>). Disposing the device takes its descriptor offline (ibonl).
+    /// fails with <see cref="GpibError.NoListeners"/>). Disposing the device takes its descriptor offline (ibonl).
     /// </remarks>
     public IGpibDevice OpenDevice(int board, int primaryAddress, int? secondaryAddress)
     {
@@ -171,8 +168,7 @@ public sealed unsafe partial class Ni488Driver : IGpibDriver
         if (ud < 0)
         {
             int iberr = api.ThreadIberr();
-            throw new VisaException(VisaStatus.ErrorResourceNotFound,
-                $"Cannot open GPIB{board}::{primaryAddress}: {Describe(iberr)}.") { NativeError = iberr };
+            throw GpibErrors.DeviceOpenFailed(board, primaryAddress, iberr);
         }
         return new Device(this, api, new UdState(ud), board);
     }

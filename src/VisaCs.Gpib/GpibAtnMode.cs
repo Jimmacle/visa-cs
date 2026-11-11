@@ -1,4 +1,4 @@
-namespace VisaCs;
+namespace VisaCs.Gpib;
 
 /// <summary>
 /// ATN line control for <see cref="Gpib.IGpibBoard.ControlAtn"/> and <c>GpibInterfaceSession.ControlAtn</c>

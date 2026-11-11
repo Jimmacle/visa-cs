@@ -90,8 +90,8 @@ public sealed class GpibNativeDriverTests
         Assert.False(driver.IsAvailable);
         Assert.Contains(path, driver.LoadError);
         Assert.Empty(driver.ListBoards());
-        var error = Assert.Throws<VisaException>(() => driver.OpenBoard(0));
-        Assert.Equal(VisaStatus.ErrorLibraryNotFound, error.Status);
+        var error = Assert.Throws<GpibException>(() => driver.OpenBoard(0));
+        Assert.Equal(GpibError.LibraryNotFound, error.Error);
         Assert.Contains(path, error.Message);
     }
 
@@ -179,7 +179,10 @@ public sealed class GpibNativeDriverTests
         using var rm = Create(out _);
         if (rm is null) return;
         using var session = rm.Open("GPIB0::7::INSTR");
-        Assert.Equal(VisaStatus.ErrorNoListeners, Assert.Throws<VisaException>(() => session.WriteLine("*IDN?")).Status);
+        var error = Assert.Throws<VisaException>(() => session.WriteLine("*IDN?"));
+        Assert.Equal(VisaStatus.ErrorNoListeners, error.Status);
+        Assert.Equal(2, error.NativeError); // ENOL
+        Assert.IsType<GpibException>(error.InnerException);
         Assert.Equal(VisaStatus.ErrorResourceNotFound, Assert.Throws<VisaException>(() => rm.Open("GPIB1::INTFC")).Status);
     }
 
@@ -258,8 +261,8 @@ public sealed class GpibNativeDriverTests
 
         // Errors map like those of the synchronous calls, also when the driver reports them at completion.
         using var absent = driver.OpenDevice(0, 7, null);
-        var error = await Assert.ThrowsAsync<VisaException>(() => WriteAsync(absent, "*IDN?\n"));
-        Assert.Equal(VisaStatus.ErrorNoListeners, error.Status);
+        var error = await Assert.ThrowsAsync<GpibException>(() => WriteAsync(absent, "*IDN?\n"));
+        Assert.Equal(GpibError.NoListeners, error.Error);
         Assert.Equal(0, Control(UnsynchronizedTransfers));
     }
 
@@ -272,8 +275,8 @@ public sealed class GpibNativeDriverTests
         device.Clear(1000);
 
         var watch = Stopwatch.StartNew();
-        var timeout = await Assert.ThrowsAsync<VisaTimeoutException>(async () => await device.ReadAsync(new byte[64], null, 300));
-        Assert.Equal(VisaStatus.ErrorTimeout, timeout.Status);
+        var timeout = await Assert.ThrowsAsync<GpibTimeoutException>(async () => await device.ReadAsync(new byte[64], null, 300));
+        Assert.Equal(6, timeout.NativeError); // EABO
         if (HasAsyncCalls) Assert.InRange(watch.ElapsedMilliseconds, 250, 5000); // the driver's timeout ended it
 
         // Bytes received before the timeout are returned; the next read times out.
@@ -282,7 +285,7 @@ public sealed class GpibNativeDriverTests
         var result = await device.ReadAsync(buffer, null, 300).AsTask().WaitAsync(Patience);
         Assert.Equal("abc\n", Encoding.ASCII.GetString(buffer, 0, result.Count));
         Assert.False(result.End);
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await device.ReadAsync(buffer, null, 300));
+        await Assert.ThrowsAsync<GpibTimeoutException>(async () => await device.ReadAsync(buffer, null, 300));
         Assert.Equal(0, Control(UnsynchronizedTransfers));
     }
 
@@ -304,8 +307,8 @@ public sealed class GpibNativeDriverTests
         Assert.False(read.IsCompleted);
 
         // One transfer at a time per descriptor.
-        var busy = await Assert.ThrowsAsync<VisaException>(async () => await device.ReadAsync(new byte[64], null, 1000));
-        Assert.Equal(VisaStatus.ErrorInProgress, busy.Status);
+        var busy = await Assert.ThrowsAsync<GpibException>(async () => await device.ReadAsync(new byte[64], null, 1000));
+        Assert.Equal(GpibError.AsyncInProgress, busy.Error);
 
         cancellation.Cancel();
         var canceled = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read.WaitAsync(Patience));
@@ -344,11 +347,11 @@ public sealed class GpibNativeDriverTests
 
         await WriteAsync(device, "*IDN?\n");
         await device.ClearAsync(1000).AsTask().WaitAsync(Patience);
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await device.ReadAsync(new byte[64], null, 200)); // cleared
+        await Assert.ThrowsAsync<GpibTimeoutException>(async () => await device.ReadAsync(new byte[64], null, 200)); // cleared
 
         using var absent = driver.OpenDevice(0, 7, null);
-        var error = await Assert.ThrowsAsync<VisaException>(async () => await absent.SerialPollAsync(1000));
-        Assert.Equal(VisaStatus.ErrorNoListeners, error.Status);
+        var error = await Assert.ThrowsAsync<GpibException>(async () => await absent.SerialPollAsync(1000));
+        Assert.Equal(GpibError.NoListeners, error.Error);
     }
 
     [Fact]
@@ -492,7 +495,7 @@ public sealed class GpibNativeDriverTests
             byWait = Control(WaitResyncs);
             Assert.Equal("FAKE,GPIB,22,1.0\n", await QueryAsync(device, "*IDN?"));
             Assert.True(Control(WaitResyncs) >= byWait + 2);
-            await Assert.ThrowsAsync<VisaTimeoutException>(async () => await device.ReadAsync(new byte[8], null, 200));
+            await Assert.ThrowsAsync<GpibTimeoutException>(async () => await device.ReadAsync(new byte[8], null, 200));
         }
         finally
         {
@@ -538,7 +541,7 @@ public sealed class GpibNativeDriverTests
             else
             {
                 // The worker thread runs them one after the other; with nothing to read each times out at once.
-                foreach (var read in reads) await Assert.ThrowsAsync<VisaTimeoutException>(() => read.WaitAsync(Patience));
+                foreach (var read in reads) await Assert.ThrowsAsync<GpibTimeoutException>(() => read.WaitAsync(Patience));
             }
         }
         finally
@@ -575,8 +578,8 @@ public sealed class GpibNativeDriverTests
         if (driver is null) return;
         using (var absent = driver.OpenDevice(0, 7, null))
         {
-            var error = Assert.Throws<VisaException>(() => absent.Write("*IDN?\n"u8, true, 1000));
-            Assert.Equal(VisaStatus.ErrorNoListeners, error.Status);
+            var error = Assert.Throws<GpibException>(() => absent.Write("*IDN?\n"u8, true, 1000));
+            Assert.Equal(GpibError.NoListeners, error.Error);
             Assert.Equal(2, error.NativeError); // ENOL
             Assert.Contains("ENOL", error.Message);
         }

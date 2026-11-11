@@ -24,12 +24,14 @@ internal static class Ni488
         [0, 1, 1, 1, 1, 1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000, 300000, 1000000];
 
     /// <summary>
-    /// The ibtmo code for a timeout: TNONE when negative, otherwise the shortest code of at least that many
-    /// milliseconds, from T10ms (also used for 0) up to T1000s.
+    /// The ibtmo code for a timeout: TNONE when negative; T10us, the shortest code, for 0 (NI-488.2 has no code for
+    /// "don't wait": TNONE means no limit); otherwise the shortest code of at least that many milliseconds, from
+    /// T10ms up to T1000s.
     /// </summary>
     public static int TimeoutCode(int milliseconds)
     {
         if (milliseconds < 0) return 0;
+        if (milliseconds == 0) return 1;
         for (int code = 7; code < TimeoutTable.Length; code++)
             if (TimeoutTable[code] >= milliseconds) return code;
         return TimeoutTable.Length - 1;
@@ -61,25 +63,5 @@ internal static class Ni488
         ERST => "ERST (the event was reset)",
         EPWR => "EPWR (the interface lost power)",
         _ => $"iberr {iberr}",
-    };
-
-    /// <summary>The VISA status of an iberr code.</summary>
-    public static VisaStatus Status(int iberr) => iberr switch
-    {
-        EABO => VisaStatus.ErrorTimeout,
-        ECIC => VisaStatus.ErrorNotControllerInCharge,
-        ENOL => VisaStatus.ErrorNoListeners,
-        EADR or EARG => VisaStatus.ErrorInvalidParameter,
-        ESAC => VisaStatus.ErrorNotSystemController,
-        ENEB => VisaStatus.ErrorResourceNotFound,
-        EOIP or EWIP => VisaStatus.ErrorInProgress,
-        ECAP => VisaStatus.ErrorOperationNotSupported,
-        EBUS => VisaStatus.ErrorBusError,
-        ESRQ => VisaStatus.ErrorSrqNotOccurred,
-        ELCK => VisaStatus.ErrorResourceLocked,
-        EHDL => VisaStatus.ErrorInvalidObject,
-        EPWR => VisaStatus.ErrorConnectionLost,
-        EDVR => VisaStatus.ErrorSystemError,
-        _ => VisaStatus.ErrorIO,
     };
 }

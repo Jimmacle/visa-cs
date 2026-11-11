@@ -1,4 +1,4 @@
-namespace VisaCs;
+namespace VisaCs.Gpib;
 
 /// <summary>
 /// Addressing state of a GPIB board (VI_ATTR_GPIB_ADDR_STATE). In namespace <c>VisaCs</c> because the VISA interface
