@@ -30,10 +30,10 @@ internal sealed unsafe partial class WindowsSerialPort : NativeSerialPort
             throw error switch
             {
                 Native.ERROR_FILE_NOT_FOUND or Native.ERROR_PATH_NOT_FOUND =>
-                    new VisaException(VisaStatus.ErrorResourceNotFound, $"Serial port {portName} does not exist."),
+                    SerialErrors.Create(SerialPortError.NotFound, $"Serial port {portName} does not exist.", error),
                 Native.ERROR_ACCESS_DENIED or Native.ERROR_SHARING_VIOLATION =>
-                    new VisaException(VisaStatus.ErrorResourceBusy, $"Serial port {portName} is in use or access is denied."),
-                _ => new VisaException(VisaStatus.ErrorIO, $"Cannot open serial port {portName} (Win32 error {error})."),
+                    SerialErrors.Create(SerialPortError.InUse, $"Serial port {portName} is in use or access is denied.", error),
+                _ => SerialErrors.Create(SerialPortError.IOError, $"Cannot open serial port {portName} (Win32 error {error}).", error),
             };
         }
         _handle = new CommHandle(handle);
@@ -53,7 +53,7 @@ internal sealed unsafe partial class WindowsSerialPort : NativeSerialPort
         {
             int error = Marshal.GetLastPInvokeError();
             _handle.Dispose();
-            throw new VisaException(VisaStatus.ErrorResourceNotFound, $"{portName} is not a serial port (Win32 error {error}).");
+            throw SerialErrors.Create(SerialPortError.NotFound, $"{portName} is not a serial port (Win32 error {error}).", error);
         }
 
         try
@@ -124,8 +124,11 @@ internal sealed unsafe partial class WindowsSerialPort : NativeSerialPort
             throw NotSupported($"The serial port rejected the settings (baud {s.BaudRate}, {s.DataBits} data bits, {s.Parity}, {s.StopBits}).");
     }
 
-    private static VisaException Error(string operation) =>
-        new(VisaStatus.ErrorIO, $"{operation} failed (Win32 error {Marshal.GetLastPInvokeError()}).");
+    private static SerialPortException Error(string operation)
+    {
+        int error = Marshal.GetLastPInvokeError();
+        return SerialErrors.Create(SerialPortError.IOError, $"{operation} failed (Win32 error {error}).", error);
+    }
 
     /// <summary>
     /// Keeps the handle open while a transfer uses its raw value: Dispose closes it after the last
@@ -178,7 +181,11 @@ internal sealed unsafe partial class WindowsSerialPort : NativeSerialPort
     private static nint CreateTransferEvent()
     {
         nint evt = Native.CreateEventW(0, true, false, 0);
-        if (evt == 0) throw new VisaException(VisaStatus.ErrorSystemError, $"CreateEvent failed (Win32 error {Marshal.GetLastPInvokeError()}).");
+        if (evt == 0)
+        {
+            int error = Marshal.GetLastPInvokeError();
+            throw SerialErrors.Create(SerialPortError.SystemError, $"CreateEvent failed (Win32 error {error}).", error);
+        }
         return evt;
     }
 
@@ -210,8 +217,8 @@ internal sealed unsafe partial class WindowsSerialPort : NativeSerialPort
         // What drivers return once the device is gone differs; these are the usual ones (not tested with hardware).
         if (error is Native.ERROR_ACCESS_DENIED or Native.ERROR_BAD_COMMAND or Native.ERROR_GEN_FAILURE or
             Native.ERROR_NO_SUCH_DEVICE or Native.ERROR_DEVICE_NOT_CONNECTED or Native.ERROR_DEVICE_REMOVED)
-            return new VisaException(VisaStatus.ErrorConnectionLost, $"The serial device was disconnected (Win32 error {error}).");
-        return new VisaException(VisaStatus.ErrorIO, $"Serial {(read ? "read" : "write")} failed (Win32 error {error}).");
+            return SerialErrors.Create(SerialPortError.Disconnected, $"The serial device was disconnected (Win32 error {error}).", error);
+        return SerialErrors.Create(SerialPortError.IOError, $"Serial {(read ? "read" : "write")} failed (Win32 error {error}).", error);
     }
 
     private protected override int ReadCore(Span<byte> buffer, Deadline deadline)

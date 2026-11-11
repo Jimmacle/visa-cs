@@ -33,11 +33,12 @@ internal sealed unsafe partial class UnixSerialPort : NativeSerialPort
             int errno = Marshal.GetLastPInvokeError();
             throw errno switch
             {
-                Libc.ENOENT or Libc.ENXIO or Libc.ENODEV => new VisaException(VisaStatus.ErrorResourceNotFound, $"Serial port {path} does not exist."),
-                Libc.EACCES => new VisaException(VisaStatus.ErrorNoPermission,
-                    $"Permission denied opening {path} (on most Linux distributions the user must be in the 'dialout' or 'uucp' group)."),
-                Libc.EBUSY => new VisaException(VisaStatus.ErrorResourceBusy, $"Serial port {path} is busy."),
-                _ => new VisaException(VisaStatus.ErrorIO, $"Cannot open serial port {path} (errno {errno})."),
+                Libc.ENOENT or Libc.ENXIO or Libc.ENODEV =>
+                    SerialErrors.Create(SerialPortError.NotFound, $"Serial port {path} does not exist.", errno),
+                Libc.EACCES => SerialErrors.Create(SerialPortError.AccessDenied,
+                    $"Permission denied opening {path} (on most Linux distributions the user must be in the 'dialout' or 'uucp' group).", errno),
+                Libc.EBUSY => SerialErrors.Create(SerialPortError.InUse, $"Serial port {path} is busy.", errno),
+                _ => SerialErrors.Create(SerialPortError.IOError, $"Cannot open serial port {path} (errno {errno}).", errno),
             };
         }
         _handle = new DescriptorHandle(fd);
@@ -45,7 +46,7 @@ internal sealed unsafe partial class UnixSerialPort : NativeSerialPort
         {
             int errno = Marshal.GetLastPInvokeError();
             _handle.Dispose();
-            throw new VisaException(VisaStatus.ErrorResourceNotFound, $"{path} is not a serial port (errno {errno}).");
+            throw SerialErrors.Create(SerialPortError.NotFound, $"{path} is not a serial port (errno {errno}).", errno);
         }
         // Exclusive access, like Windows COM ports (root can still open the device).
         Libc.ioctl(fd, Requests.TIOCEXCL, null);
@@ -77,8 +78,11 @@ internal sealed unsafe partial class UnixSerialPort : NativeSerialPort
     public static IReadOnlyList<string> EnumerateMacPorts() =>
         Directory.GetFiles("/dev", "cu.*").Order(StringComparer.Ordinal).ToList();
 
-    private static VisaException Error(string operation) =>
-        new(VisaStatus.ErrorIO, $"{operation} failed (errno {Marshal.GetLastPInvokeError()}).");
+    private static SerialPortException Error(string operation)
+    {
+        int errno = Marshal.GetLastPInvokeError();
+        return SerialErrors.Create(SerialPortError.IOError, $"{operation} failed (errno {errno}).", errno);
+    }
 
     /// <summary>
     /// Keeps the descriptor open while it is used, so that its number cannot be reused by another file: Dispose closes
@@ -107,10 +111,10 @@ internal sealed unsafe partial class UnixSerialPort : NativeSerialPort
         }
     }
 
-    private static VisaException TransferFailed(int errno, bool read) =>
+    private static SerialPortException TransferFailed(int errno, bool read) =>
         errno is Libc.EIO or Libc.ENXIO or Libc.ENODEV
-            ? new VisaException(VisaStatus.ErrorConnectionLost, $"The serial device was disconnected (errno {errno}).")
-            : new VisaException(VisaStatus.ErrorIO, $"Serial {(read ? "read" : "write")} failed (errno {errno}).");
+            ? SerialErrors.Create(SerialPortError.Disconnected, $"The serial device was disconnected (errno {errno}).", errno)
+            : SerialErrors.Create(SerialPortError.IOError, $"Serial {(read ? "read" : "write")} failed (errno {errno}).", errno);
 
     /// <summary>One non-blocking read: the number of bytes read, or 0 when none are waiting.</summary>
     private int TryRead(int fd, Span<byte> buffer)
@@ -180,7 +184,7 @@ internal sealed unsafe partial class UnixSerialPort : NativeSerialPort
             {
                 int errno = Marshal.GetLastPInvokeError();
                 if (errno == Libc.EINTR) continue;
-                throw new VisaException(VisaStatus.ErrorIO, $"poll failed (errno {errno}).");
+                throw SerialErrors.Create(SerialPortError.IOError, $"poll failed (errno {errno}).", errno);
             }
             if (rc > 0) return pfd.revents;
         }

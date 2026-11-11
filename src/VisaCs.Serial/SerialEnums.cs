@@ -1,8 +1,4 @@
-namespace VisaCs;
-
-// These enums are part of the VISA session API (SerialSession), so they live in namespace VisaCs although they are
-// defined in the serial library: code that uses NativeSerialPort alone needs both 'using VisaCs;' and
-// 'using VisaCs.Serial;'.
+namespace VisaCs.Serial;
 
 /// <summary>Serial parity (VI_ATTR_ASRL_PARITY).</summary>
 public enum SerialParity

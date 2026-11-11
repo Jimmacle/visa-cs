@@ -57,11 +57,11 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         var buffer = new byte[16];
 
         var watch = Stopwatch.StartNew();
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await port.ReadAsync(buffer, 300));
+        await Assert.ThrowsAsync<SerialTimeoutException>(async () => await port.ReadAsync(buffer, 300));
         Assert.InRange(watch.ElapsedMilliseconds, 280, 1500);
 
         watch.Restart();
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await port.ReadAsync(buffer, 0));
+        await Assert.ThrowsAsync<SerialTimeoutException>(async () => await port.ReadAsync(buffer, 0));
         Assert.True(watch.ElapsedMilliseconds < 500, $"A read with timeout 0 took {watch.ElapsedMilliseconds} ms.");
 
         Assert.Equal(0, await port.ReadAsync(Memory<byte>.Empty, -1));
@@ -69,7 +69,7 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
 
         // The synchronous path still works alongside the asynchronous one.
         watch.Restart();
-        Assert.Throws<VisaTimeoutException>(() => port.Read(buffer, 200));
+        Assert.Throws<SerialTimeoutException>(() => port.Read(buffer, 200));
         Assert.InRange(watch.ElapsedMilliseconds, 180, 1500);
     }
 
@@ -124,8 +124,8 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         Assert.True(canceled.IsCanceled);
 
         // The port still works: reads time out normally, nothing is left aborted.
-        Assert.Throws<VisaTimeoutException>(() => port.Read(buffer, 100));
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await port.ReadAsync(buffer, 100));
+        Assert.Throws<SerialTimeoutException>(() => port.Read(buffer, 100));
+        await Assert.ThrowsAsync<SerialTimeoutException>(async () => await port.ReadAsync(buffer, 100));
         await port.WriteAsync("x"u8.ToArray(), 2000);
     }
 
@@ -140,24 +140,24 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         await Task.Delay(150);
         Assert.False(read.IsCompleted);
         port.Abort();
-        var ex = await Assert.ThrowsAsync<VisaException>(() => read).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(VisaStatus.ErrorAbort, ex.Status);
+        var ex = await Assert.ThrowsAsync<SerialPortException>(() => read).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(SerialPortError.Aborted, ex.Error);
 
         // The abort ended the pending read and is not held for a later one.
-        Assert.Throws<VisaTimeoutException>(() => port.Read(buffer, 100));
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await port.ReadAsync(buffer, 100));
+        Assert.Throws<SerialTimeoutException>(() => port.Read(buffer, 100));
+        await Assert.ThrowsAsync<SerialTimeoutException>(async () => await port.ReadAsync(buffer, 100));
 
         // Abort still ends a synchronous read blocked on another thread.
         var blocked = Task.Factory.StartNew(() => port.Read(buffer, -1), TaskCreationOptions.LongRunning);
         await Task.Delay(150);
         port.Abort();
-        ex = await Assert.ThrowsAsync<VisaException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(VisaStatus.ErrorAbort, ex.Status);
+        ex = await Assert.ThrowsAsync<SerialPortException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(SerialPortError.Aborted, ex.Error);
 
         // An abort while nothing is in progress has no effect on later calls.
         port.Abort();
         var watch = Stopwatch.StartNew();
-        Assert.Throws<VisaTimeoutException>(() => port.Read(buffer, 300));
+        Assert.Throws<SerialTimeoutException>(() => port.Read(buffer, 300));
         Assert.True(watch.ElapsedMilliseconds >= 250, $"The read ended after {watch.ElapsedMilliseconds} ms.");
     }
 
@@ -175,8 +175,8 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         Assert.False(writer.IsCompleted);
 
         port.Abort();
-        Assert.Equal(VisaStatus.ErrorAbort, (await Assert.ThrowsAsync<VisaException>(() => reader).WaitAsync(TimeSpan.FromSeconds(5))).Status);
-        Assert.Equal(VisaStatus.ErrorAbort, (await Assert.ThrowsAsync<VisaException>(() => writer).WaitAsync(TimeSpan.FromSeconds(5))).Status);
+        Assert.Equal(SerialPortError.Aborted, (await Assert.ThrowsAsync<SerialPortException>(() => reader).WaitAsync(TimeSpan.FromSeconds(5))).Error);
+        Assert.Equal(SerialPortError.Aborted, (await Assert.ThrowsAsync<SerialPortException>(() => writer).WaitAsync(TimeSpan.FromSeconds(5))).Error);
         port.DiscardOutput();
     }
 
@@ -196,10 +196,10 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         var watch = Stopwatch.StartNew();
         port.Dispose();
         Assert.True(watch.ElapsedMilliseconds < 100, $"Dispose took {watch.ElapsedMilliseconds} ms.");
-        var ex = await Assert.ThrowsAsync<VisaException>(() => read).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(VisaStatus.ErrorAbort, ex.Status);
-        ex = await Assert.ThrowsAsync<VisaException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(VisaStatus.ErrorAbort, ex.Status);
+        var ex = await Assert.ThrowsAsync<SerialPortException>(() => read).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(SerialPortError.Closed, ex.Error);
+        ex = await Assert.ThrowsAsync<SerialPortException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(SerialPortError.Closed, ex.Error);
         Assert.True(watch.ElapsedMilliseconds < 1000, $"Ending the transfers took {watch.ElapsedMilliseconds} ms.");
 
         Assert.Throws<ObjectDisposedException>(() => port.Read(new byte[1], 10));
@@ -218,7 +218,7 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         else
         {
             var again = OpenPort(name);
-            Assert.Throws<VisaTimeoutException>(() => again.Read(new byte[1], 50));
+            Assert.Throws<SerialTimeoutException>(() => again.Read(new byte[1], 50));
         }
     }
 
@@ -328,20 +328,20 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         await Task.Delay(50);
 
         var watch = Stopwatch.StartNew();
-        Assert.Throws<VisaTimeoutException>(() => port.Drain(200));
+        Assert.Throws<SerialTimeoutException>(() => port.Drain(200));
         Assert.InRange(watch.ElapsedMilliseconds, 180, 1000);
         watch.Restart();
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await port.DrainAsync(200));
+        await Assert.ThrowsAsync<SerialTimeoutException>(async () => await port.DrainAsync(200));
         Assert.InRange(watch.ElapsedMilliseconds, 180, 1000);
-        Assert.Throws<VisaTimeoutException>(() => port.Drain(0));
+        Assert.Throws<SerialTimeoutException>(() => port.Drain(0));
 
         // Abort ends a drain blocked on another thread (and the write it waits for).
         var drain = Task.Factory.StartNew(() => port.Drain(-1), TaskCreationOptions.LongRunning);
         await Task.Delay(100);
         Assert.False(drain.IsCompleted);
         port.Abort();
-        Assert.Equal(VisaStatus.ErrorAbort, (await Assert.ThrowsAsync<VisaException>(() => drain).WaitAsync(TimeSpan.FromSeconds(5))).Status);
-        Assert.Equal(VisaStatus.ErrorAbort, (await Assert.ThrowsAsync<VisaException>(() => write).WaitAsync(TimeSpan.FromSeconds(5))).Status);
+        Assert.Equal(SerialPortError.Aborted, (await Assert.ThrowsAsync<SerialPortException>(() => drain).WaitAsync(TimeSpan.FromSeconds(5))).Error);
+        Assert.Equal(SerialPortError.Aborted, (await Assert.ThrowsAsync<SerialPortException>(() => write).WaitAsync(TimeSpan.FromSeconds(5))).Error);
         port.DiscardOutput();
         port.Drain(2000);
     }
@@ -354,14 +354,14 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         var data = new byte[1000];
 
         var watch = Stopwatch.StartNew();
-        var ex = await Assert.ThrowsAsync<VisaTimeoutException>(async () => await port.WriteAsync(data, 300));
+        var ex = await Assert.ThrowsAsync<SerialTimeoutException>(async () => await port.WriteAsync(data, 300));
         output.WriteLine($"Async write timed out after {watch.ElapsedMilliseconds} ms with {ex.BytesTransferred} bytes sent.");
         Assert.InRange(watch.ElapsedMilliseconds, 280, 2000);
         Assert.InRange(ex.BytesTransferred, 0, data.Length - 1);
         port.DiscardOutput();
 
         watch.Restart();
-        ex = Assert.Throws<VisaTimeoutException>(() => port.Write(data, 300));
+        ex = Assert.Throws<SerialTimeoutException>(() => port.Write(data, 300));
         output.WriteLine($"Sync write timed out after {watch.ElapsedMilliseconds} ms with {ex.BytesTransferred} bytes sent.");
         Assert.InRange(watch.ElapsedMilliseconds, 280, 2000);
         port.DiscardOutput();
@@ -373,24 +373,24 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         var write = port.WriteAsync(data, -1).AsTask();
         await Task.Delay(200);
         port.Abort();
-        var abort = await Assert.ThrowsAsync<VisaException>(() => write).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(VisaStatus.ErrorAbort, abort.Status);
+        var abort = await Assert.ThrowsAsync<SerialPortException>(() => write).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(SerialPortError.Aborted, abort.Error);
         port.DiscardOutput();
 
         // A synchronous write that has sent part of its data also ends on Abort.
         var blocked = Task.Factory.StartNew(() => port.Write(data, -1), TaskCreationOptions.LongRunning);
         await Task.Delay(300);
         port.Abort();
-        abort = await Assert.ThrowsAsync<VisaException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(VisaStatus.ErrorAbort, abort.Status);
+        abort = await Assert.ThrowsAsync<SerialPortException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(SerialPortError.Aborted, abort.Error);
         port.DiscardOutput();
 
         // DiscardOutput drops the data of a write in progress, which then ends as aborted.
         blocked = Task.Factory.StartNew(() => port.Write(data, -1), TaskCreationOptions.LongRunning);
         await Task.Delay(200);
         port.DiscardOutput();
-        abort = await Assert.ThrowsAsync<VisaException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(VisaStatus.ErrorAbort, abort.Status);
+        abort = await Assert.ThrowsAsync<SerialPortException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(SerialPortError.Aborted, abort.Error);
     }
 
     [Fact]
@@ -407,7 +407,7 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         await port.DrainAsync(5000);
         Assert.False(read.IsCompleted);
 
-        await Assert.ThrowsAsync<VisaTimeoutException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAsync<SerialTimeoutException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(5));
         cts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read).WaitAsync(TimeSpan.FromSeconds(5));
     }
@@ -428,7 +428,7 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
             .ToList();
         await Task.WhenAll(writes).WaitAsync(TimeSpan.FromSeconds(10));
         foreach (var read in reads)
-            await Assert.ThrowsAsync<VisaTimeoutException>(() => read).WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.ThrowsAsync<SerialTimeoutException>(() => read).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.InRange(watch.ElapsedMilliseconds, 550, 3000);
         port.Drain(5000);
     }
@@ -438,7 +438,7 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
     {
         if (Uart is not { } name) return;
         var port = OpenPort(name);
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await port.ReadAsync(new byte[1], 10));
+        await Assert.ThrowsAsync<SerialTimeoutException>(async () => await port.ReadAsync(new byte[1], 10));
         await Task.Delay(200);
 
         int before = ThreadCount();
@@ -453,7 +453,7 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         cts.Cancel();
         foreach (var read in reads)
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Throws<VisaTimeoutException>(() => port.Read(new byte[1], 50));
+        Assert.Throws<SerialTimeoutException>(() => port.Read(new byte[1], 50));
     }
 
     // ------------------------------------------------------------------ Linux pseudo-terminals
@@ -535,10 +535,10 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
 
         // Rejected settings leave the port as it was.
         var before = port.Settings;
-        Assert.Equal(VisaStatus.ErrorAttributeStateNotSupported,
-            Assert.Throws<VisaException>(() => port.Configure(before with { FlowControl = SerialFlowControlModes.DtrDsr })).Status);
-        Assert.Equal(VisaStatus.ErrorAttributeStateNotSupported,
-            Assert.Throws<VisaException>(() => port.Configure(before with { ReplacementCharacter = (byte)'?', DiscardNull = true })).Status);
+        Assert.Equal(SerialPortError.UnsupportedSetting,
+            Assert.Throws<SerialPortException>(() => port.Configure(before with { FlowControl = SerialFlowControlModes.DtrDsr })).Error);
+        Assert.Equal(SerialPortError.UnsupportedSetting,
+            Assert.Throws<SerialPortException>(() => port.Configure(before with { ReplacementCharacter = (byte)'?', DiscardNull = true })).Error);
         Assert.Equal(before, port.Settings);
     }
 
@@ -559,14 +559,14 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         var watch = Stopwatch.StartNew();
         _masters.Remove(master);
         close(master);
-        Assert.Equal(VisaStatus.ErrorConnectionLost, (await Assert.ThrowsAsync<VisaException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(15))).Status);
-        Assert.Equal(VisaStatus.ErrorConnectionLost, (await Assert.ThrowsAsync<VisaException>(() => pending).WaitAsync(TimeSpan.FromSeconds(15))).Status);
+        Assert.Equal(SerialPortError.Disconnected, (await Assert.ThrowsAsync<SerialPortException>(() => blocked).WaitAsync(TimeSpan.FromSeconds(15))).Error);
+        Assert.Equal(SerialPortError.Disconnected, (await Assert.ThrowsAsync<SerialPortException>(() => pending).WaitAsync(TimeSpan.FromSeconds(15))).Error);
         Assert.True(watch.ElapsedMilliseconds < 2000, $"The transfers ended after {watch.ElapsedMilliseconds} ms.");
 
-        Assert.Equal(VisaStatus.ErrorConnectionLost, Assert.Throws<VisaException>(() => port.Read(buffer, 5000)).Status);
-        Assert.Equal(VisaStatus.ErrorConnectionLost, (await Assert.ThrowsAsync<VisaException>(async () => await port.ReadAsync(buffer, 5000))).Status);
-        Assert.Equal(VisaStatus.ErrorConnectionLost, Assert.Throws<VisaException>(() => port.Write("x"u8, 5000)).Status);
-        Assert.Equal(VisaStatus.ErrorConnectionLost, (await Assert.ThrowsAsync<VisaException>(async () => await port.WriteAsync("x"u8.ToArray(), 5000))).Status);
+        Assert.Equal(SerialPortError.Disconnected, Assert.Throws<SerialPortException>(() => port.Read(buffer, 5000)).Error);
+        Assert.Equal(SerialPortError.Disconnected, (await Assert.ThrowsAsync<SerialPortException>(async () => await port.ReadAsync(buffer, 5000))).Error);
+        Assert.Equal(SerialPortError.Disconnected, Assert.Throws<SerialPortException>(() => port.Write("x"u8, 5000)).Error);
+        Assert.Equal(SerialPortError.Disconnected, (await Assert.ThrowsAsync<SerialPortException>(async () => await port.WriteAsync("x"u8.ToArray(), 5000))).Error);
         Assert.True(watch.ElapsedMilliseconds < 3000, $"Took {watch.ElapsedMilliseconds} ms.");
     }
 
@@ -661,18 +661,18 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         var data = new byte[1 << 20];
 
         var watch = Stopwatch.StartNew();
-        var ex = await Assert.ThrowsAsync<VisaTimeoutException>(async () => await port.WriteAsync(data, 200));
+        var ex = await Assert.ThrowsAsync<SerialTimeoutException>(async () => await port.WriteAsync(data, 200));
         Assert.InRange(watch.ElapsedMilliseconds, 180, 1500);
         Assert.InRange(ex.BytesTransferred, 1, data.Length - 1);
         Assert.Equal(ex.BytesTransferred, MasterDrain(master));
 
-        ex = Assert.Throws<VisaTimeoutException>(() => port.Write(data, 200));
+        ex = Assert.Throws<SerialTimeoutException>(() => port.Write(data, 200));
         Assert.InRange(ex.BytesTransferred, 1, data.Length - 1);
         Assert.Equal(ex.BytesTransferred, MasterDrain(master));
 
         using var cts = new CancellationTokenSource(200);
         var canceled = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await port.WriteAsync(data, -1, cts.Token));
-        var inner = Assert.IsType<VisaTimeoutException>(canceled.InnerException);
+        var inner = Assert.IsType<SerialTimeoutException>(canceled.InnerException);
         Assert.Equal(inner.BytesTransferred, MasterDrain(master));
     }
 
@@ -689,15 +689,15 @@ public sealed partial class SerialPortAsyncTests(ITestOutputHelper output) : IDi
         Assert.False(write.IsCompleted);
         Assert.False(read.IsCompleted);
         port.Abort();
-        Assert.Equal(VisaStatus.ErrorAbort, (await Assert.ThrowsAsync<VisaException>(() => write).WaitAsync(TimeSpan.FromSeconds(5))).Status);
-        Assert.Equal(VisaStatus.ErrorAbort, (await Assert.ThrowsAsync<VisaException>(() => read).WaitAsync(TimeSpan.FromSeconds(5))).Status);
+        Assert.Equal(SerialPortError.Aborted, (await Assert.ThrowsAsync<SerialPortException>(() => write).WaitAsync(TimeSpan.FromSeconds(5))).Error);
+        Assert.Equal(SerialPortError.Aborted, (await Assert.ThrowsAsync<SerialPortException>(() => read).WaitAsync(TimeSpan.FromSeconds(5))).Error);
         MasterDrain(master);
-        Assert.Throws<VisaTimeoutException>(() => port.Read(buffer, 50));
+        Assert.Throws<SerialTimeoutException>(() => port.Read(buffer, 50));
 
         // An abort with nothing in progress is not remembered: later calls run normally.
         port.Abort();
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await port.ReadAsync(buffer, 50));
-        Assert.Throws<VisaTimeoutException>(() => port.Read(buffer, 50));
+        await Assert.ThrowsAsync<SerialTimeoutException>(async () => await port.ReadAsync(buffer, 50));
+        Assert.Throws<SerialTimeoutException>(() => port.Read(buffer, 50));
 
         // The data path is intact.
         MasterWrite(master, "ok"u8);

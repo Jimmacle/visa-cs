@@ -149,7 +149,7 @@ public sealed unsafe partial class SerialPtyTests : IDisposable
             response.AddRange(buffer.AsSpan(0, port.Read(buffer, 2000)).ToArray());
         Assert.Equal(_instrument.Identity + "\n", Encoding.ASCII.GetString(response.ToArray()));
 
-        Assert.Throws<VisaTimeoutException>(() => port.Read(buffer, 50));
+        Assert.Throws<SerialTimeoutException>(() => port.Read(buffer, 50));
 
         // Abort ends a read that is blocked on another thread.
         Exception? error = null;
@@ -162,7 +162,7 @@ public sealed unsafe partial class SerialPtyTests : IDisposable
         Thread.Sleep(100);
         port.Abort();
         Assert.True(reader.Join(5000));
-        Assert.Equal(VisaStatus.ErrorAbort, Assert.IsType<VisaException>(error).Status);
+        Assert.Equal(SerialPortError.Aborted, Assert.IsType<SerialPortException>(error).Error);
     }
 
     public void Dispose()

@@ -1,6 +1,8 @@
 # Serial instruments
 
 ```csharp
+using VisaCs.Serial;   // SerialParity, SerialStopBitsMode, SerialFlowControlModes
+
 using var s = rm.Open<SerialSession>("ASRL3::INSTR");
 s.BaudRate = 115200;
 s.Parity = SerialParity.None;
@@ -85,13 +87,11 @@ once (`CancelIoEx` on Windows).
 
 ## Without VISA
 
-The port is in the `VisaCs.Serial` library and works without a resource manager or sessions. Its enums
-(`SerialParity`, `SerialStopBitsMode`, `SerialFlowControlModes`) are in namespace `VisaCs` because the VISA
-sessions use them too, so code that uses the port alone needs both namespaces:
+The port is in the `VisaCs.Serial` library, which depends on no other VisaCs package and works without a resource
+manager or sessions. All its types are in namespace `VisaCs.Serial`:
 
 ```csharp
-using VisaCs;          // SerialParity, VisaException, VisaTimeoutException
-using VisaCs.Serial;   // NativeSerialPort, SerialSettings
+using VisaCs.Serial;   // NativeSerialPort, SerialSettings, SerialParity, SerialPortException, SerialTimeoutException
 
 foreach (var name in NativeSerialPort.GetPortNames())
     Console.WriteLine(name);
@@ -109,26 +109,34 @@ port.Drain(timeoutMilliseconds: 1000);                      // waits until every
 `Read` returns whatever has arrived; termination characters, END handling and the VISA attributes are what
 `SerialSession` adds on top. `Configure` changes the settings later, and `Settings` returns the ones in effect.
 
-**Timeouts.** Every `Read`, `Write` and `Drain` takes its own timeout in milliseconds. `Timeout.Infinite` (-1)
-waits without limit; 0 does only what is possible at once (a read returns the bytes that have already arrived).
-Running out of time throws `VisaTimeoutException`; for a write, `BytesTransferred` tells how much was sent.
+**Timeouts.** Every `Read`, `Write` and `Drain` takes its own timeout in milliseconds. `Timeout.Infinite` (-1, or
+any negative value) waits without limit; 0 does only what is possible at once (a read returns the bytes that have
+already arrived). Running out of time throws `SerialTimeoutException` (a `TimeoutException`); for a write,
+`BytesTransferred` tells how much was sent.
 
 **Asynchronous calls.** `ReadAsync`, `WriteAsync` and `DrainAsync` do the same without holding a thread.
 Cancelling their token ends them with `OperationCanceledException`; a cancelled read takes no data from the port.
 
 **Abort and Dispose.** `Abort` ends every read, write and drain in progress, on any thread, with
-`VisaException` (`VI_ERROR_ABORT`); calls that start afterwards are not affected. A blocked synchronous call
-notices it at once on Windows and within 200 ms on Linux and macOS. `Dispose` does the same and closes the port;
-afterwards every member except `Dispose`, `Abort`, `PortName` and `Settings` throws `ObjectDisposedException`.
+`SerialPortException` (`SerialPortError.Aborted`); calls that start afterwards are not affected. A blocked
+synchronous call notices it at once on Windows and within 200 ms on Linux and macOS. `Dispose` does the same
+(`SerialPortError.Closed`) and closes the port; afterwards every member except `Dispose`, `Abort`, `PortName` and
+`Settings` throws `ObjectDisposedException`.
 
 **Threads.** All members may be called from any thread. A read and a write can run at the same time (each
 synchronous or asynchronous), and the line members, `Configure`, `Abort` and the discard methods may be used while
 transfers are in progress. Several reads at once are allowed, but each gets an unpredictable part of the data.
 
-**Errors.** Errors are `VisaException`s with a `VisaStatus`: `ErrorResourceNotFound` (no such port, or not a
-serial port), `ErrorResourceBusy` (open elsewhere), `ErrorNoPermission`, `ErrorAttributeStateNotSupported` (a
-setting the port rejects), `ErrorConnectionLost` (device unplugged), `ErrorAbort` and `ErrorIO`. Settings outside
-their range (baud rate below 1, data bits outside 5 to 8) throw `ArgumentOutOfRangeException`.
+**Errors.** Device and OS errors are `SerialPortException`s (derived from `IOException`). Their `Error` is one of
+`NotFound` (no such port, or not a serial port), `InUse` (open elsewhere; on Windows also access denied),
+`AccessDenied` (Linux and macOS), `UnsupportedSetting` (a setting the port rejects), `Disconnected` (device
+unplugged), `Aborted`, `Closed`, `IOError` and `SystemError`, and `NativeError` is the errno or Win32 error when
+known. Settings outside their range (baud rate below 1, data bits outside 5 to 8) throw
+`ArgumentOutOfRangeException`, and `Open` throws `PlatformNotSupportedException` on other operating systems.
+Through a `SerialSession` the same failures are `VisaException`s: `ErrorResourceNotFound`, `ErrorResourceBusy`,
+`ErrorNoPermission`, `ErrorAttributeStateNotSupported`, `ErrorConnectionLost`, `ErrorAbort` (for both `Aborted`
+and `Closed`), `ErrorIO`, `ErrorSystemError` and `ErrorOperationNotSupported`, with the serial exception as
+`InnerException`.
 
 **Platform differences.**
 

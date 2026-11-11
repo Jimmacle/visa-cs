@@ -15,9 +15,11 @@ namespace VisaCs.Serial;
 /// <para>
 /// Timeouts are in milliseconds: <see cref="Timeout.Infinite"/> (-1, or any negative value) waits without limit, and
 /// 0 only takes what can be done at once (a read returns bytes that have already arrived). A transfer that runs out
-/// of time throws <see cref="VisaTimeoutException"/>; other errors are <see cref="VisaException"/> with a
-/// <see cref="VisaStatus"/> code. A disconnected device (a USB adapter unplugged) gives
-/// <see cref="VisaStatus.ErrorConnectionLost"/>. Parity, framing and overrun errors are not reported as exceptions:
+/// of time throws <see cref="SerialTimeoutException"/>; device, driver and OS errors are
+/// <see cref="SerialPortException"/>, whose <see cref="SerialPortException.Error"/> tells what went wrong. A
+/// disconnected device (a USB adapter unplugged) gives <see cref="SerialPortError.Disconnected"/>, a transfer ended by
+/// <see cref="Abort"/> <see cref="SerialPortError.Aborted"/> and one ended by <see cref="Dispose"/>
+/// <see cref="SerialPortError.Closed"/>. Parity, framing and overrun errors are not reported as exceptions:
 /// see <see cref="SerialSettings.ReplacementCharacter"/>.
 /// </para>
 /// <para>
@@ -55,13 +57,13 @@ public abstract class NativeSerialPort : IDisposable
     /// Opens a serial port by its operating-system name, such as <c>COM3</c> or <c>/dev/ttyUSB0</c>, applies
     /// <see cref="SerialSettings.Default"/> and asserts DTR and RTS.
     /// </summary>
-    /// <exception cref="VisaException">
-    /// <see cref="VisaStatus.ErrorResourceNotFound"/>: the port does not exist or is not a serial port.
-    /// <see cref="VisaStatus.ErrorResourceBusy"/>: the port is open in this or another process (on Windows also when
-    /// access is denied). <see cref="VisaStatus.ErrorNoPermission"/>: the user may not open the device (Linux and
-    /// macOS). <see cref="VisaStatus.ErrorOperationNotSupported"/>: the operating system is not Windows, Linux or
-    /// macOS. <see cref="VisaStatus.ErrorIO"/>: any other failure.
+    /// <exception cref="SerialPortException">
+    /// <see cref="SerialPortError.NotFound"/>: the port does not exist or is not a serial port.
+    /// <see cref="SerialPortError.InUse"/>: the port is open in this or another process (on Windows also when
+    /// access is denied). <see cref="SerialPortError.AccessDenied"/>: the user may not open the device (Linux and
+    /// macOS). <see cref="SerialPortError.IOError"/>: any other failure.
     /// </exception>
+    /// <exception cref="PlatformNotSupportedException">The operating system is not Windows, Linux or macOS.</exception>
     public static NativeSerialPort Open(string portName) => Open(portName, SerialSettings.Default);
 
     /// <summary>
@@ -69,10 +71,11 @@ public abstract class NativeSerialPort : IDisposable
     /// (except a line that the chosen flow control drives).
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">A setting is outside its range (see <see cref="SerialSettings"/>).</exception>
-    /// <exception cref="VisaException">
+    /// <exception cref="SerialPortException">
     /// The port cannot be opened (see <see cref="Open(string)"/>) or rejects the settings
-    /// (<see cref="VisaStatus.ErrorAttributeStateNotSupported"/>).
+    /// (<see cref="SerialPortError.UnsupportedSetting"/>).
     /// </exception>
+    /// <exception cref="PlatformNotSupportedException">The operating system is not Windows, Linux or macOS.</exception>
     public static NativeSerialPort Open(string portName, SerialSettings settings)
     {
         ArgumentNullException.ThrowIfNull(portName);
@@ -80,7 +83,7 @@ public abstract class NativeSerialPort : IDisposable
         NativeSerialPort port;
         if (OperatingSystem.IsWindows()) port = new WindowsSerialPort(portName);
         else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) port = new UnixSerialPort(portName);
-        else throw new VisaException(VisaStatus.ErrorOperationNotSupported, "Serial ports are not supported on this platform.");
+        else throw new PlatformNotSupportedException("Serial ports are not supported on this platform.");
         try
         {
             port.Configure(settings);
@@ -130,9 +133,9 @@ public abstract class NativeSerialPort : IDisposable
     /// progress. If the port rejects the settings, it keeps the previous ones.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">A setting is outside its range (see <see cref="SerialSettings"/>).</exception>
-    /// <exception cref="VisaException">
+    /// <exception cref="SerialPortException">
     /// The platform or the port does not support a setting or combination
-    /// (<see cref="VisaStatus.ErrorAttributeStateNotSupported"/>), for example DTR/DSR flow control on Linux.
+    /// (<see cref="SerialPortError.UnsupportedSetting"/>), for example DTR/DSR flow control on Linux.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The port was disposed.</exception>
     public void Configure(SerialSettings settings)
@@ -150,28 +153,29 @@ public abstract class NativeSerialPort : IDisposable
 
     /// <summary>
     /// Reads at least one byte into <paramref name="buffer"/> and returns how many were read. Waits up to
-    /// <paramref name="timeoutMilliseconds"/> for the first byte (-1: no limit); with 0 it returns bytes that have
+    /// <paramref name="timeoutMilliseconds"/> for the first byte (negative: no limit); with 0 it returns bytes that have
     /// already arrived. An empty buffer returns 0 at once.
     /// </summary>
-    /// <exception cref="VisaTimeoutException">No byte arrived in time.</exception>
-    /// <exception cref="VisaException">
-    /// <see cref="Abort"/> was called or the port was disposed during the call (<see cref="VisaStatus.ErrorAbort"/>),
-    /// the device was disconnected (<see cref="VisaStatus.ErrorConnectionLost"/>), or an I/O error occurred.
+    /// <exception cref="SerialTimeoutException">No byte arrived in time.</exception>
+    /// <exception cref="SerialPortException">
+    /// <see cref="Abort"/> was called (<see cref="SerialPortError.Aborted"/>) or the port was disposed (<see cref="SerialPortError.Closed"/>) during the call,
+    /// the device was disconnected (<see cref="SerialPortError.Disconnected"/>), or an I/O error occurred.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The port was disposed before the call.</exception>
     public int Read(Span<byte> buffer, int timeoutMilliseconds) =>
         buffer.IsEmpty ? 0 : ReadCore(buffer, Deadline.FromMilliseconds(timeoutMilliseconds));
 
     /// <summary>
-    /// Writes all of <paramref name="data"/>, waiting up to <paramref name="timeoutMilliseconds"/> (-1: no limit).
+    /// Writes all of <paramref name="data"/>, waiting up to <paramref name="timeoutMilliseconds"/> (negative: no limit).
     /// </summary>
-    /// <exception cref="VisaTimeoutException">
-    /// The data could not be written in time; <see cref="VisaTimeoutException.BytesTransferred"/> tells how much was.
+    /// <exception cref="SerialTimeoutException">
+    /// The data could not be written in time; <see cref="SerialTimeoutException.BytesTransferred"/> tells how much was.
     /// </exception>
-    /// <exception cref="VisaException">
-    /// <see cref="Abort"/> or <see cref="DiscardOutput"/> (Windows) was called or the port was disposed during the
-    /// call (<see cref="VisaStatus.ErrorAbort"/>), the device was disconnected
-    /// (<see cref="VisaStatus.ErrorConnectionLost"/>), or an I/O error occurred.
+    /// <exception cref="SerialPortException">
+    /// <see cref="Abort"/> or <see cref="DiscardOutput"/> (Windows) was called
+    /// (<see cref="SerialPortError.Aborted"/>) or the port was disposed
+    /// (<see cref="SerialPortError.Closed"/>) during the call, the device was disconnected
+    /// (<see cref="SerialPortError.Disconnected"/>), or an I/O error occurred.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The port was disposed before the call.</exception>
     public void Write(ReadOnlySpan<byte> data, int timeoutMilliseconds)
@@ -185,11 +189,11 @@ public abstract class NativeSerialPort : IDisposable
     /// <see cref="OperationCanceledException"/>. A cancelled or timed-out read takes no data from the port: bytes
     /// that arrived just as it was cancelled are returned instead.
     /// </summary>
-    /// <exception cref="VisaTimeoutException">No byte arrived in time.</exception>
+    /// <exception cref="SerialTimeoutException">No byte arrived in time.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
-    /// <exception cref="VisaException">
-    /// <see cref="Abort"/> was called or the port was disposed during the call (<see cref="VisaStatus.ErrorAbort"/>),
-    /// the device was disconnected (<see cref="VisaStatus.ErrorConnectionLost"/>), or an I/O error occurred.
+    /// <exception cref="SerialPortException">
+    /// <see cref="Abort"/> was called (<see cref="SerialPortError.Aborted"/>) or the port was disposed (<see cref="SerialPortError.Closed"/>) during the call,
+    /// the device was disconnected (<see cref="SerialPortError.Disconnected"/>), or an I/O error occurred.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The port was disposed before the call.</exception>
     public ValueTask<int> ReadAsync(Memory<byte> buffer, int timeoutMilliseconds, CancellationToken cancellationToken = default)
@@ -203,16 +207,17 @@ public abstract class NativeSerialPort : IDisposable
     /// Writes all of <paramref name="data"/>, like <see cref="Write"/>, without holding a thread while waiting.
     /// Cancelling <paramref name="cancellationToken"/> ends the call with <see cref="OperationCanceledException"/>;
     /// part of the data may have been sent, and the exception's <see cref="Exception.InnerException"/> is a
-    /// <see cref="VisaTimeoutException"/> whose <see cref="VisaTimeoutException.BytesTransferred"/> tells how much.
+    /// <see cref="SerialTimeoutException"/> whose <see cref="SerialTimeoutException.BytesTransferred"/> tells how much.
     /// </summary>
-    /// <exception cref="VisaTimeoutException">
-    /// The data could not be written in time; <see cref="VisaTimeoutException.BytesTransferred"/> tells how much was.
+    /// <exception cref="SerialTimeoutException">
+    /// The data could not be written in time; <see cref="SerialTimeoutException.BytesTransferred"/> tells how much was.
     /// </exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
-    /// <exception cref="VisaException">
-    /// <see cref="Abort"/> or <see cref="DiscardOutput"/> (Windows) was called or the port was disposed during the
-    /// call (<see cref="VisaStatus.ErrorAbort"/>), the device was disconnected
-    /// (<see cref="VisaStatus.ErrorConnectionLost"/>), or an I/O error occurred.
+    /// <exception cref="SerialPortException">
+    /// <see cref="Abort"/> or <see cref="DiscardOutput"/> (Windows) was called
+    /// (<see cref="SerialPortError.Aborted"/>) or the port was disposed
+    /// (<see cref="SerialPortError.Closed"/>) during the call, the device was disconnected
+    /// (<see cref="SerialPortError.Disconnected"/>), or an I/O error occurred.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The port was disposed before the call.</exception>
     public ValueTask WriteAsync(ReadOnlyMemory<byte> data, int timeoutMilliseconds, CancellationToken cancellationToken = default)
@@ -223,15 +228,15 @@ public abstract class NativeSerialPort : IDisposable
     }
 
     /// <summary>
-    /// Waits up to <paramref name="timeoutMilliseconds"/> (-1: no limit; 0: only checks) until all written data has
+    /// Waits up to <paramref name="timeoutMilliseconds"/> (negative: no limit; 0: only checks) until all written data has
     /// been transmitted. Neither Win32 nor termios can wait for this with a timeout, so it polls the driver's
     /// transmit queue (<c>ClearCommError</c> on Windows, <c>TIOCOUTQ</c> on Linux and macOS, plus the UART's
     /// transmitter-empty flag on Linux where the driver reports it), sleeping between checks for about as long as
     /// the queued bytes take to send (1 to 50 ms). Pseudo-terminals always report an empty queue.
     /// </summary>
-    /// <exception cref="VisaTimeoutException">Data was still queued when the time ran out.</exception>
-    /// <exception cref="VisaException">
-    /// <see cref="Abort"/> was called or the port was disposed during the call (<see cref="VisaStatus.ErrorAbort"/>).
+    /// <exception cref="SerialTimeoutException">Data was still queued when the time ran out.</exception>
+    /// <exception cref="SerialPortException">
+    /// <see cref="Abort"/> was called (<see cref="SerialPortError.Aborted"/>) or the port was disposed (<see cref="SerialPortError.Closed"/>) during the call.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The port was disposed before the call.</exception>
     public void Drain(int timeoutMilliseconds) =>
@@ -241,10 +246,10 @@ public abstract class NativeSerialPort : IDisposable
     /// Waits until all written data has been transmitted, like <see cref="Drain"/>, without holding a thread.
     /// Cancelling <paramref name="cancellationToken"/> ends the call with <see cref="OperationCanceledException"/>.
     /// </summary>
-    /// <exception cref="VisaTimeoutException">Data was still queued when the time ran out.</exception>
+    /// <exception cref="SerialTimeoutException">Data was still queued when the time ran out.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
-    /// <exception cref="VisaException">
-    /// <see cref="Abort"/> was called or the port was disposed during the call (<see cref="VisaStatus.ErrorAbort"/>).
+    /// <exception cref="SerialPortException">
+    /// <see cref="Abort"/> was called (<see cref="SerialPortError.Aborted"/>) or the port was disposed (<see cref="SerialPortError.Closed"/>) during the call.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The port was disposed before the call.</exception>
     public ValueTask DrainAsync(int timeoutMilliseconds, CancellationToken cancellationToken = default)
@@ -289,8 +294,8 @@ public abstract class NativeSerialPort : IDisposable
 
     /// <summary>
     /// Ends every <see cref="Read"/>, <see cref="Write"/>, <see cref="ReadAsync"/>, <see cref="WriteAsync"/>,
-    /// <see cref="Drain"/> and <see cref="DrainAsync"/> in progress with <see cref="VisaException"/>
-    /// (<see cref="VisaStatus.ErrorAbort"/>). Transfers that start after it returns are not affected. Does nothing
+    /// <see cref="Drain"/> and <see cref="DrainAsync"/> in progress with <see cref="SerialPortException"/>
+    /// (<see cref="SerialPortError.Aborted"/>). Transfers that start after it returns are not affected. Does nothing
     /// once the port is disposed.
     /// </summary>
     /// <remarks>
@@ -313,7 +318,7 @@ public abstract class NativeSerialPort : IDisposable
 
     /// <summary>
     /// Discards written bytes that have not been transmitted yet. On Windows a write in progress ends with
-    /// <see cref="VisaException"/> (<see cref="VisaStatus.ErrorAbort"/>) and its remaining data is dropped; on Linux
+    /// <see cref="SerialPortException"/> (<see cref="SerialPortError.Aborted"/>) and its remaining data is dropped; on Linux
     /// and macOS only the data already queued in the driver is dropped, and a write in progress goes on with the
     /// rest of its data.
     /// </summary>
@@ -321,15 +326,15 @@ public abstract class NativeSerialPort : IDisposable
 
     /// <summary>
     /// State of the RTS output line; asserted after <see cref="Open(string)"/>. While RTS/CTS flow control is on the
-    /// driver drives the line: setting it then throws <see cref="VisaException"/>
-    /// (<see cref="VisaStatus.ErrorAttributeStateNotSupported"/>) on Windows and has no lasting effect on Linux and
+    /// driver drives the line: setting it then throws <see cref="SerialPortException"/>
+    /// (<see cref="SerialPortError.UnsupportedSetting"/>) on Windows and has no lasting effect on Linux and
     /// macOS. On Windows the getter returns the last value set rather than reading the line.
     /// </summary>
     public abstract bool Rts { get; set; }
 
     /// <summary>
     /// State of the DTR output line; asserted after <see cref="Open(string)"/>. While DTR/DSR flow control is on
-    /// (Windows) setting it throws <see cref="VisaException"/> (<see cref="VisaStatus.ErrorAttributeStateNotSupported"/>).
+    /// (Windows) setting it throws <see cref="SerialPortException"/> (<see cref="SerialPortError.UnsupportedSetting"/>).
     /// On Windows the getter returns the last value set rather than reading the line.
     /// </summary>
     public abstract bool Dtr { get; set; }
@@ -354,7 +359,7 @@ public abstract class NativeSerialPort : IDisposable
 
     /// <summary>
     /// Closes the port. Transfers in progress on other threads and pending asynchronous calls end with a
-    /// <see cref="VisaException"/> (<see cref="VisaStatus.ErrorAbort"/>); the OS handle is released when the last
+    /// <see cref="SerialPortException"/> (<see cref="SerialPortError.Closed"/>); the OS handle is released when the last
     /// of them has returned, which is at once for asynchronous calls and within 200 ms for a blocked synchronous call
     /// on Linux and macOS. Calling it again does nothing.
     /// </summary>
@@ -405,15 +410,18 @@ public abstract class NativeSerialPort : IDisposable
 
     private static Exception TimedOut(Deadline deadline, string message, int bytesTransferred = 0)
     {
-        var timeout = new VisaTimeoutException(message) { BytesTransferred = bytesTransferred };
+        var timeout = SerialErrors.Timeout(message, bytesTransferred);
         return deadline.IsCanceled ? AsyncIO.Canceled(timeout, deadline.CancellationToken) : timeout;
     }
 
-    private protected static VisaException Aborted() => new(VisaStatus.ErrorAbort, "The serial operation was aborted.");
+    private protected static SerialPortException Aborted() =>
+        SerialErrors.Create(SerialPortError.Aborted, "The serial operation was aborted.");
 
-    private protected static VisaException Closed() => new(VisaStatus.ErrorAbort, "The serial port was closed.");
+    private protected static SerialPortException Closed() => SerialErrors.Create(SerialPortError.Closed, "The serial port was closed.");
 
-    private protected static VisaException Disconnected() => new(VisaStatus.ErrorConnectionLost, "The serial device was disconnected.");
+    private protected static SerialPortException Disconnected() =>
+        SerialErrors.Create(SerialPortError.Disconnected, "The serial device was disconnected.");
 
-    private protected static VisaException NotSupported(string message) => new(VisaStatus.ErrorAttributeStateNotSupported, message);
+    private protected static SerialPortException NotSupported(string message, int? nativeError = null) =>
+        SerialErrors.Create(SerialPortError.UnsupportedSetting, message, nativeError);
 }

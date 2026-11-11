@@ -3,7 +3,7 @@ namespace VisaCs.Serial;
 /// <summary>Line settings applied to a serial port with <see cref="NativeSerialPort.Configure"/>.</summary>
 /// <remarks>
 /// <see cref="NativeSerialPort.Configure"/> throws <see cref="ArgumentOutOfRangeException"/> for values outside the
-/// documented ranges, and <see cref="VisaException"/> with <see cref="VisaStatus.ErrorAttributeStateNotSupported"/>
+/// documented ranges, and <see cref="SerialPortException"/> with <see cref="SerialPortError.UnsupportedSetting"/>
 /// for a combination the platform or the port does not support.
 /// </remarks>
 /// <param name="BaudRate">
