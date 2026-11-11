@@ -65,7 +65,7 @@ dotnet add package VisaCs --version 0.1.0
 |---|---|
 | VISA: resource manager, sessions, every interface | `VisaCs` (brings in the four component libraries) |
 | Only a serial port, without VISA | `VisaCs.Serial` |
-| Only USB host access (WinUSB, usbfs, libusb), without VISA | `VisaCs.Usb` |
+| Only USB host access (WinUSB, usbfs, libusb) or USBTMC instruments, without VISA | `VisaCs.Usb` |
 | Only an NI-488.2 (GPIB) binding, without VISA | `VisaCs.Gpib` |
 | Simulated instruments in test projects | `VisaCs.Simulation`, same version as `VisaCs` |
 
@@ -77,7 +77,7 @@ The hardware access layers are separate libraries, so they can be used without t
 |---|---|---|
 | `VisaCs` | VISA itself: `ResourceManager`, sessions, resource names, VXI-11, HiSLIP, raw socket, VICP, USBTMC, PXI, formatted I/O, discovery | the four below |
 | `VisaCs.Serial` | `NativeSerialPort`: serial ports through the Win32 comm API or termios, without `System.IO.Ports` ([usage](docs/serial.md#without-visa)) | `VisaCs.Primitives` |
-| `VisaCs.Usb` | `IUsbBackend` and its WinUSB, usbfs and libusb implementations: enumeration and control, bulk and interrupt transfers ([usage](docs/usb.md#without-visa)) | `VisaCs.Primitives` |
+| `VisaCs.Usb` | `IUsbBackend` and its WinUSB, usbfs and libusb implementations: enumeration and control, bulk and interrupt transfers; `UsbTmcDevice`, a USBTMC/USB488 client ([usage](docs/usb.md#without-visa)) | `VisaCs.Primitives` |
 | `VisaCs.Gpib` | `Ni488Driver`: GPIB through any NI-488.2 compatible library, bound at run time ([usage](docs/gpib.md#without-visa)) | `VisaCs.Primitives` |
 | `VisaCs.Primitives` | `VisaStatus` and the `VisaException` types the other libraries report errors with | |
 | `VisaCs.Simulation` | Simulated instruments and protocol servers for testing without hardware | `VisaCs` |
@@ -137,7 +137,7 @@ src/VisaCs/                 the VISA library
   Discovery/                find expressions, VXI-11 broadcast, mDNS
   Formatting/               viPrintf/viScanf format language
 src/VisaCs.Serial/          native serial ports (Win32, termios)
-src/VisaCs.Usb/             USB backends: WinUSB, usbfs, libusb
+src/VisaCs.Usb/             USB backends: WinUSB, usbfs, libusb; USBTMC client
 src/VisaCs.Gpib/            NI-488.2 binding
 src/VisaCs.Primitives/      VisaStatus and the exception types
 src/Shared/                 internal helpers compiled into several libraries (deadlines, libc, library loading)

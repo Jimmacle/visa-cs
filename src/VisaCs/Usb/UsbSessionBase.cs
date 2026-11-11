@@ -25,10 +25,11 @@ public abstract class UsbSessionBase : MessageBasedSession
 
     private protected IUsbDeviceHandle Device => Shared?.Handle ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
 
-    private protected SharedUsbDevice SharedDevice => Shared ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
-
-    /// <summary>Serializes transfers with other sessions to the same device; waits at most until the deadline.</summary>
-    private protected ValueTask<IOGate.Releaser> EnterDeviceAsync(Deadline deadline, bool async) => SharedDevice.EnterAsync(deadline, async);
+    /// <summary>
+    /// The USBTMC client of the interface, shared with the other sessions to it. It serializes their operations;
+    /// RAW sessions use <see cref="UsbTmcDevice.RunExclusive{T}"/> for their transfers.
+    /// </summary>
+    private protected UsbTmcDevice Tmc => Shared?.Device ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
 
     /// <summary>USB vendor ID (VI_ATTR_MANF_ID).</summary>
     public ushort ManufacturerId => Name.VendorId;
@@ -92,8 +93,6 @@ public abstract class UsbSessionBase : MessageBasedSession
         InterruptInEndpoint = interrupt?.Address ?? -1;
         BulkInPacketSize = Math.Max(8, (int)(bulkIn?.MaxPacketSize ?? 512));
         InterruptPacketSize = Math.Max(2, (int)(interrupt?.MaxPacketSize ?? 2));
-        Shared.InterruptEndpoint = InterruptInEndpoint;
-        Shared.InterruptPacketSize = InterruptPacketSize;
         await OnDeviceOpenedAsync(Deadline.FromMilliseconds(connectTimeoutMs).WithCancellation(cancellationToken), async).ConfigureAwait(false);
     }
 
@@ -115,38 +114,6 @@ public abstract class UsbSessionBase : MessageBasedSession
         return remaining;
     }
 
-    /// <summary>
-    /// USB timeout for a class request that must end even when the session timeout is infinite: the remaining time,
-    /// 5 seconds when the deadline is infinite, and one last millisecond when it has expired.
-    /// </summary>
-    private protected static int ToRequestTimeout(Deadline deadline)
-    {
-        int remaining = deadline.RemainingMilliseconds;
-        return remaining < 0 ? 5000 : Math.Max(1, remaining);
-    }
-
-    private protected ValueTask<int> BulkAsync(int endpoint, Memory<byte> buffer, int timeoutMs, CancellationToken cancellationToken, bool async) =>
-        async
-            ? Device.BulkTransferAsync((byte)endpoint, buffer, timeoutMs, cancellationToken)
-            : new(Device.BulkTransfer((byte)endpoint, buffer.Span, timeoutMs));
-
-    private protected ValueTask<int> ControlAsync(byte requestType, byte request, ushort value, ushort index, Memory<byte> buffer, int timeoutMs,
-        CancellationToken cancellationToken, bool async) =>
-        async
-            ? Device.ControlTransferAsync(requestType, request, value, index, buffer, timeoutMs, cancellationToken)
-            : new(Device.ControlTransfer(requestType, request, value, index, buffer.Span, timeoutMs));
-
-    private protected ValueTask<int> InterruptAsync(int endpoint, Memory<byte> buffer, int timeoutMs, CancellationToken cancellationToken, bool async) =>
-        async
-            ? Device.InterruptTransferAsync((byte)endpoint, buffer, timeoutMs, cancellationToken)
-            : new(Device.InterruptTransfer((byte)endpoint, buffer.Span, timeoutMs));
-
-    private protected static ValueTask DelayAsync(int milliseconds, bool async)
-    {
-        if (async) return new ValueTask(Task.Delay(milliseconds));
-        Thread.Sleep(milliseconds);
-        return default;
-    }
 
     /// <summary>
     /// Performs a control IN transfer on the default pipe (viUsbControlIn) and returns the bytes received, at most
@@ -166,12 +133,9 @@ public abstract class UsbSessionBase : MessageBasedSession
         ExecuteAsync((requestType, request, value, index, length), static async (s, a, ct, async) =>
         {
             var session = (UsbSessionBase)s;
-            var deadline = session.NewDeadline(ct);
             var buffer = new byte[a.length];
-            int n;
-            using (await session.EnterDeviceAsync(deadline, async).ConfigureAwait(false))
-                n = await session.ControlAsync((byte)(a.requestType | 0x80), a.request, a.value, a.index, buffer, ToUsbTimeout(deadline),
-                    ct, async).ConfigureAwait(false);
+            int n = await session.ControlTransferAsync((byte)(a.requestType | 0x80), a.request, a.value, a.index, buffer, ct, async)
+                .ConfigureAwait(false);
             return n == a.length ? buffer : buffer.AsSpan(0, n).ToArray();
         }, cancellationToken, async);
 
@@ -193,12 +157,20 @@ public abstract class UsbSessionBase : MessageBasedSession
         await ExecuteAsync((requestType, request, value, index, data), static async (s, a, ct, async) =>
         {
             var session = (UsbSessionBase)s;
-            var deadline = session.NewDeadline(ct);
-            using (await session.EnterDeviceAsync(deadline, async).ConfigureAwait(false))
-                await session.ControlAsync((byte)(a.requestType & 0x7F), a.request, a.value, a.index, a.data.ToArray(),
-                    ToUsbTimeout(deadline), ct, async).ConfigureAwait(false);
+            await session.ControlTransferAsync((byte)(a.requestType & 0x7F), a.request, a.value, a.index, a.data.ToArray(), ct, async)
+                .ConfigureAwait(false);
             return true;
         }, cancellationToken, async).ConfigureAwait(false);
+
+    /// <summary>A control transfer between the operations of other sessions, bounded by the session timeout.</summary>
+    private ValueTask<int> ControlTransferAsync(byte requestType, byte request, ushort value, ushort index, byte[] buffer,
+        CancellationToken cancellationToken, bool async)
+    {
+        int timeout = NewDeadline(cancellationToken).RemainingMilliseconds;
+        return async
+            ? Tmc.ControlTransferAsync(requestType, request, value, index, buffer, timeout, cancellationToken)
+            : new(Tmc.ControlTransfer(requestType, request, value, index, buffer, timeout));
+    }
 
     private protected override void RegisterAttributes(AttributeTable table)
     {

@@ -1,7 +1,8 @@
 # VisaCs.Usb
 
 USB host access without a vendor SDK: device enumeration, control, bulk and interrupt transfers behind one
-`IUsbBackend` interface, for any device with a bulk or interrupt interface (not only instruments).
+`IUsbBackend` interface, for any device with a bulk or interrupt interface (not only instruments), and
+`UsbTmcDevice`, a USBTMC/USB488 client for test and measurement instruments.
 
 | Backend | OS | The device must be |
 |---|---|---|
@@ -21,6 +22,7 @@ dotnet add package VisaCs.Usb --version 0.1.0
 ## Example
 
 ```csharp
+using System.Text;
 using VisaCs.Usb;
 
 using IUsbBackend usb = UsbBackends.CreateDefault() ?? throw new PlatformNotSupportedException("No USB backend.");
@@ -29,20 +31,23 @@ foreach (UsbDeviceInfo d in usb.EnumerateDevices())
     Console.WriteLine($"{d.VendorId:X4}:{d.ProductId:X4} {d.Manufacturer} {d.Product} ({d.SerialNumber})");
 
 UsbDeviceInfo device = usb.EnumerateDevices().First(d => d.VendorId == 0x1234 && d.ProductId == 0x5678);
-using IUsbDeviceHandle handle = usb.Open(device, interfaceNumber: 0);
-UsbEndpointInfo bulkOut = handle.Interface.FindEndpoint(UsbTransferType.Bulk, input: false)!;
-UsbEndpointInfo bulkIn = handle.Interface.FindEndpoint(UsbTransferType.Bulk, input: true)!;
+using UsbTmcDevice tmc = UsbTmcDevice.Open(usb, device);   // first USBTMC interface; reads its capabilities
 
 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-await handle.BulkTransferAsync(bulkOut.Address, "MEAS?\n"u8.ToArray(), timeoutMilliseconds: 1000, cts.Token);
-var response = new byte[512];
-int n = await handle.BulkTransferAsync(bulkIn.Address, response, timeoutMilliseconds: 1000, cts.Token);
+byte[] response = await tmc.QueryAsync("MEAS?\n"u8.ToArray(), timeoutMilliseconds: 2000, cts.Token);
+Console.WriteLine(Encoding.ASCII.GetString(response));
 ```
 
-- The direction comes from bit 7 of the endpoint address (or the request type, for control transfers).
-- A timeout of 0 or less waits without limit; an expired one throws `VisaTimeoutException` (from
-  `VisaCs.Primitives`); cancelling throws `OperationCanceledException` and cancels the transfer in the OS.
-- Several transfers can be in flight on one handle. Asynchronous transfers hold no thread.
+- `UsbTmcDevice` speaks USBTMC/USB488: messages with END (`Write`, `Read`, `ReadMessage`, `Query`),
+  vendor-specific messages, device clear, the status byte, trigger, remote/local control and service requests.
+  A transfer that times out or is cancelled is followed by the USBTMC abort sequence. One instance can be shared
+  between threads.
+- For devices that are not instruments, transfer on the handle directly: `usb.Open(device, interfaceNumber)`, then
+  `BulkTransfer`, `InterruptTransfer` or `ControlTransfer` (and their async forms). The direction comes from bit 7
+  of the endpoint address (or the request type, for control transfers).
+- `UsbTmcDevice` timeouts bound the whole call (-1: no limit); a handle transfer's timeout bounds one transfer (0 or
+  -1: no limit). Timeouts throw `VisaTimeoutException` (from `VisaCs.Primitives`); cancelling throws
+  `OperationCanceledException` and cancels the transfer in the OS. Asynchronous calls hold no thread.
 - Implement `IUsbBackend` and `IUsbDeviceHandle` to plug in another driver stack; `UsbDescriptorParser` decodes
   standard descriptors.
 

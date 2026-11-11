@@ -98,7 +98,8 @@ available on INSTR sessions too; like reads and writes, they are bounded by the 
 ## Sharing and attributes
 
 Operating-system USB handles are exclusive, so all sessions to the same USB interface that go through the same
-backend share one handle, with transfers serialized between them (as NI-VISA does). A session waits for another
+backend share one handle and one `UsbTmcDevice` client, which serializes their transfers (as NI-VISA does), counts
+the USBTMC bTags for all of them and reads the interrupt endpoint once for all. A session waits for another
 session's transfer at most until its own timeout. Resource managers that use different backend instances do not
 share handles: the second one to open the interface gets `VI_ERROR_RSRC_BUSY`, as does another program.
 
@@ -110,10 +111,69 @@ pipe addresses (`VI_ATTR_USB_BULK_IN_PIPE`, `..._BULK_OUT_PIPE`, `..._INTR_IN_PI
 
 ## Without VISA
 
-The backends are in the `VisaCs.Usb` library and work on their own, for any USB device with a bulk or interrupt
-interface, not only instruments. The driver setup above applies (WinUSB on Windows, usbfs access rights on
-Linux, libusb elsewhere). The library's types are in the `VisaCs.Usb` namespace; the exceptions it throws
-(`VisaException`, `VisaTimeoutException`) and `VisaStatus` come from `VisaCs.Primitives`, in the `VisaCs` namespace.
+The `VisaCs.Usb` library works on its own. It has the backends, for any USB device with a bulk or interrupt
+interface, and `UsbTmcDevice`, the USBTMC/USB488 client that `UsbSession` is built on. The driver setup above
+applies (WinUSB on Windows, usbfs access rights on Linux, libusb elsewhere). The library's types are in the
+`VisaCs.Usb` namespace, except `UsbTmcCapabilities`; the exceptions it throws (`VisaException`,
+`VisaTimeoutException`) and `VisaStatus` come from `VisaCs.Primitives`, in the `VisaCs` namespace.
+
+### USBTMC instruments
+
+```csharp
+using System.Text;
+using VisaCs;       // VisaException, VisaTimeoutException, VisaStatus, UsbTmcCapabilities
+using VisaCs.Usb;
+
+using var usb = UsbBackends.CreateDefault() ?? throw new PlatformNotSupportedException("No USB backend.");
+var device = usb.EnumerateDevices().First(d => d.VendorId == 0x1234 && d.ProductId == 0x5678);
+
+// Opens the first USBTMC interface and reads GET_CAPABILITIES.
+using var tmc = UsbTmcDevice.Open(usb, device);
+string idn = Encoding.ASCII.GetString(tmc.Query("*IDN?\n"u8, timeoutMilliseconds: 2000));
+
+tmc.Write("CONF:VOLT:DC\n"u8, end: true, timeoutMilliseconds: 2000);
+await tmc.WriteAsync("READ?\n"u8.ToArray(), end: true, timeoutMilliseconds: 2000);
+byte[] reading = await tmc.ReadMessageAsync(timeoutMilliseconds: 5000);  // transfers until EOM
+
+var buffer = new byte[4096];
+UsbTmcReadResult part = tmc.Read(buffer, timeoutMilliseconds: 2000);       // one transfer; part.End = EOM
+
+tmc.Clear(timeoutMilliseconds: 2000);                                       // INITIATE_CLEAR sequence
+if (tmc.IsUsb488)
+{
+    byte stb = tmc.ReadStatusByte(timeoutMilliseconds: 2000);
+    if (tmc.Capabilities.AcceptsTrigger) tmc.Trigger(timeoutMilliseconds: 2000);
+    if (tmc.Capabilities.AcceptsRenControl) tmc.RenControl(enable: true, timeoutMilliseconds: 2000);
+}
+if (tmc.HasInterruptEndpoint)
+    tmc.AddInterruptHandler(p => { if (p.IsServiceRequest) Console.WriteLine($"SRQ, status byte 0x{p.StatusByte:X2}"); });
+```
+
+- **Messages.** `Write` sends DEV_DEP_MSG_OUT transfers (at most 1 MiB each), with EOM on the last one when `end`
+  is true. `Read` asks for one transfer of up to the buffer's length and reports whether it carried EOM;
+  `ReadMessage` reads until EOM, and `Query` writes and reads with no other caller's operation in between. With
+  `termChar`, a device that reports `SupportsTermChar` ends the transfer after that byte. `WriteVendorSpecific` and
+  `ReadVendorSpecific` send VENDOR_SPECIFIC_OUT and REQUEST_VENDOR_SPECIFIC_IN messages.
+- **Timeouts and cancellation.** `timeoutMilliseconds` bounds the whole call; `Timeout.Infinite` (-1) waits without
+  limit. A bulk transfer that times out or is cancelled is followed by the USBTMC abort sequence, so the next
+  message works. Timeouts throw `VisaTimeoutException`, cancelling an asynchronous call throws
+  `OperationCanceledException`. Class requests (clear, status byte, remote/local) wait at most 5 seconds when the
+  timeout is infinite.
+- **Capabilities.** `UsbTmcDevice.Open` reads them; over a handle you opened yourself
+  (`new UsbTmcDevice(handle)`), call `ReadCapabilities`. Trigger, remote/local control and `IndicatorPulse` throw
+  `VisaStatus.ErrorOperationNotSupported` unless the capabilities allow them; the status byte, trigger and
+  remote/local control need a USB488 interface.
+- **Status byte and SRQ.** `ReadStatusByte` matches the response on the interrupt endpoint to its request by bTag,
+  also while interrupt handlers run. Handlers get every other interrupt packet (`IsServiceRequest`, `StatusByte`,
+  `Data`) on a read loop that holds no thread while idle.
+- **Sharing.** One instance may be used from several threads: each operation has the device to itself and bTags
+  never repeat. `ControlTransfer` and `RunExclusive` run other transfers between the client's operations.
+- **Errors.** `VisaStatus.ErrorIO` when the device reports a failure or sends an invalid header,
+  `ErrorOperationNotSupported` as above, and the handle's own errors for failed transfers.
+
+### Raw transfers
+
+For devices that are not USBTMC instruments, use the handle directly:
 
 ```csharp
 using VisaCs;       // VisaException, VisaTimeoutException, VisaStatus
@@ -127,7 +187,7 @@ Console.WriteLine($"{handle.Device.Manufacturer} {handle.Device.Product} {handle
 
 var bulkOut = handle.Interface.FindEndpoint(UsbTransferType.Bulk, input: false)!;
 var bulkIn = handle.Interface.FindEndpoint(UsbTransferType.Bulk, input: true)!;
-byte[] request = "MEAS?\n"u8.ToArray();
+byte[] request = [0x01, 0x02];
 var response = new byte[512];
 handle.BulkTransfer(bulkOut.Address, request, timeoutMilliseconds: 1000);
 int n = handle.BulkTransfer(bulkIn.Address, response, timeoutMilliseconds: 1000);
@@ -153,7 +213,7 @@ if (interruptIn is not null)
 - **Timeouts.** `timeoutMilliseconds` bounds one transfer; 0 and `Timeout.Infinite` (-1) wait without limit. A
   transfer that times out is cancelled in the operating system and throws `VisaTimeoutException`; data that an IN
   transfer had already received is discarded, and an OUT transfer may have been partly sent, so resynchronize with
-  the device afterwards (USBTMC devices: `INITIATE_CLEAR` or the abort requests).
+  the device afterwards (`UsbTmcDevice` does that for USBTMC devices).
 - **Cancellation.** Cancelling the token of an asynchronous transfer cancels it in the operating system before
   the call returns, then throws `OperationCanceledException`; the device stays usable. With libusb on macOS this
   also aborts the other transfers pending on the same endpoint.
@@ -178,11 +238,11 @@ Implement `IUsbBackend` (`Name`, `EnumerateDevices`, `Open`, `Dispose`) and `IUs
 interrupt transfers, synchronous and asynchronous, and `ClearHalt`); their XML documentation is the contract.
 `UsbDescriptorParser` decodes standard descriptors. In particular:
 
-- Throw `VisaTimeoutException` on timeouts, so that the USBTMC abort handling runs, and cancel the transfer in the
-  operating system before throwing.
+- Throw `VisaTimeoutException` on timeouts, so that the USBTMC abort handling of `UsbTmcDevice` runs, and cancel
+  the transfer in the operating system before throwing.
 - Asynchronous methods throw `OperationCanceledException` when their token is cancelled, and every method throws
   `ObjectDisposedException` once the handle is disposed (a transfer pending at that moment too).
-- Support concurrent transfers on different endpoints: the VISA layer keeps an interrupt-IN read pending while
-  sessions run bulk and control transfers.
+- Support concurrent transfers on different endpoints: `UsbTmcDevice` keeps an interrupt-IN read pending while
+  it runs bulk and control transfers.
 
 `SimulatedUsbBackend` in `VisaCs.Simulation` is a complete example.

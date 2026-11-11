@@ -2,15 +2,17 @@
   <PropertyGroup>
     <RootNamespace>VisaCs.Usb</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Description>USB host access without a vendor SDK: device enumeration and control, bulk and interrupt transfers through WinUSB (Windows), usbfs (Linux) or libusb-1.0, behind one IUsbBackend interface.</Description>
-    <PackageTags>usb;winusb;usbfs;libusb;instrument</PackageTags>
+    <Description>USB host access without a vendor SDK: device enumeration and control, bulk and interrupt transfers through WinUSB (Windows), usbfs (Linux) or libusb-1.0, behind one IUsbBackend interface, and a USBTMC/USB488 client (UsbTmcDevice) for test and measurement instruments.</Description>
+    <PackageTags>usb;winusb;usbfs;libusb;usbtmc;usb488;instrument</PackageTags>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
+    <Compile Include="..\Shared\ChangeSignal.cs" Link="Internal\ChangeSignal.cs" />
     <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
+    <Compile Include="..\Shared\IOGate.cs" Link="Internal\IOGate.cs" />
     <Compile Include="..\Shared\Libc.cs" Link="Internal\Libc.cs" />
     <Compile Include="..\Shared\NativeLibraries.cs" Link="Internal\NativeLibraries.cs" />
     <Compile Include="..\Shared\UnixPoller.cs" Link="Internal\UnixPoller.cs" />
