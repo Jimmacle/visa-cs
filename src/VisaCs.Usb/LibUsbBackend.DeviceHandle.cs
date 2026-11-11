@@ -224,14 +224,15 @@ public sealed partial class LibUsbBackend
             if (_transfer is null)
             {
                 NativeMemory.Free(Buffer);
-                throw new VisaException(VisaStatus.ErrorAllocation, "libusb_alloc_transfer failed.");
+                throw UsbErrors.Create(UsbError.OutOfMemory, "libusb_alloc_transfer failed.");
             }
-            HasTimeout = timeoutMilliseconds > 0;
+            HasTimeout = timeoutMilliseconds >= 0;
             _transfer->dev_handle = deviceHandle;
             _transfer->flags = 0;
             _transfer->endpoint = endpoint;
             _transfer->type = type;
-            _transfer->timeout = HasTimeout ? (uint)timeoutMilliseconds : 0; // 0: no timeout
+            // libusb has no "do not wait": 0 means no timeout, so the shortest timeout it has stands in for it.
+            _transfer->timeout = HasTimeout ? (uint)Math.Max(1, timeoutMilliseconds) : 0;
             _transfer->length = length;
             _transfer->callback = &OnCompleted;
             _transfer->buffer = Buffer;
@@ -305,7 +306,7 @@ public sealed partial class LibUsbBackend
                 if (!_submitted || _transfer is null) return; // reported (or never submitted)
                 _abandoned = true;
             }
-            TrySetException(UsbTransferHelpers.Disposed());
+            TrySetException(UsbErrors.Disposed());
         }
 
         /// <summary>The number of bytes transferred (copied to <paramref name="input"/> for IN transfers), or the exception for the status.</summary>
@@ -319,7 +320,7 @@ public sealed partial class LibUsbBackend
                     return n;
                 case Native.LIBUSB_TRANSFER_CANCELLED when cancellationToken.IsCancellationRequested || disposed:
                 case Native.LIBUSB_TRANSFER_TIMED_OUT when cancellationToken.IsCancellationRequested:
-                    throw UsbTransferHelpers.Interrupted(operation, cancellationToken, disposed);
+                    throw UsbErrors.Interrupted(operation, cancellationToken, disposed);
                 default:
                     // The error codes the synchronous API reports for these statuses (a timeout loses received data).
                     throw Error(Status switch

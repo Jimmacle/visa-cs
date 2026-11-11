@@ -44,7 +44,7 @@ public sealed partial class WinUsbBackend
             {
                 // A device bound to WinUSB as a whole reaches all its interfaces through its one path.
                 if (data.Composite || data.Interfaces.Count == 0)
-                    throw new VisaException(VisaStatus.ErrorResourceNotFound, $"Interface {interfaceNumber} of {device} is not bound to WinUSB.");
+                    throw UsbErrors.NotFound($"Interface {interfaceNumber} of {device} is not bound to WinUSB.");
                 path = data.Interfaces.Values.First();
             }
 
@@ -53,15 +53,15 @@ public sealed partial class WinUsbBackend
             if (_file.IsInvalid)
             {
                 int error = Marshal.GetLastPInvokeError();
-                throw new VisaException(error == Native.ERROR_ACCESS_DENIED ? VisaStatus.ErrorResourceBusy : VisaStatus.ErrorResourceNotFound,
-                    $"Cannot open USB device {device} (Win32 error {error}). Is it bound to WinUSB and not in use?");
+                throw UsbErrors.Create(error == Native.ERROR_ACCESS_DENIED ? UsbError.Busy : UsbError.NotFound,
+                    $"Cannot open USB device {device} (Win32 error {error}). Is it bound to WinUSB and not in use?", error);
             }
             try
             {
                 if (!Native.WinUsb_Initialize(_file, out _winusb))
-                    throw new VisaException(VisaStatus.ErrorResourceNotFound, $"WinUsb_Initialize failed (Win32 error {Marshal.GetLastPInvokeError()}).");
+                    throw WinUsbInitializeFailed(Marshal.GetLastPInvokeError());
                 _handle = FindInterface(interfaceNumber, out var desc)
-                    ?? throw new VisaException(VisaStatus.ErrorResourceNotFound, $"Interface {interfaceNumber} of {device} is not reachable through WinUSB.");
+                    ?? throw UsbErrors.NotFound($"Interface {interfaceNumber} of {device} is not reachable through WinUSB.");
 
                 // Transfers enforce their timeouts by cancelling the I/O, so no pipe may time out on its own (the
                 // default pipe's default is 5 seconds). Control transfers use the first interface's default pipe.
@@ -154,7 +154,7 @@ public sealed partial class WinUsbBackend
                     if (parsed.Count > 0) interfaces = parsed.Where(i => !data.Composite || data.Interfaces.ContainsKey(i.Number)).ToList();
                 }
             }
-            catch (VisaException)
+            catch (Exception ex) when (ex is UsbException or UsbTimeoutException)
             {
                 // Not answering: keep what enumeration found.
             }
@@ -181,12 +181,16 @@ public sealed partial class WinUsbBackend
 
         private void Exit() => Interlocked.Decrement(ref _activeCalls);
 
+        private static UsbException WinUsbInitializeFailed(int error) => UsbErrors.NotFound($"WinUsb_Initialize failed (Win32 error {error}).", error);
+
+        private static UsbException CreateEventFailed(int error) => UsbErrors.SystemError($"CreateEvent failed (Win32 error {error}).", error);
+
         private static Exception Error(int error, string operation) => error switch
         {
-            Native.ERROR_SEM_TIMEOUT => UsbTransferHelpers.TimedOut(operation),
-            Native.ERROR_OPERATION_ABORTED => new VisaException(VisaStatus.ErrorAbort, $"USB {operation} aborted."),
-            Native.ERROR_DEVICE_NOT_CONNECTED or Native.ERROR_BAD_COMMAND or Native.ERROR_FILE_NOT_FOUND => UsbTransferHelpers.Disconnected(operation),
-            _ => UsbTransferHelpers.Failed(operation, $"Win32 error {error}"),
+            Native.ERROR_SEM_TIMEOUT => UsbErrors.TimedOut(operation),
+            Native.ERROR_OPERATION_ABORTED => UsbErrors.Create(UsbError.Aborted, $"USB {operation} aborted.", error),
+            Native.ERROR_DEVICE_NOT_CONNECTED or Native.ERROR_BAD_COMMAND or Native.ERROR_FILE_NOT_FOUND => UsbErrors.Disconnected(operation, error),
+            _ => UsbErrors.Failed(operation, $"Win32 error {error}", error),
         };
 
         private static Native.WINUSB_SETUP_PACKET Setup(byte requestType, byte request, ushort value, ushort index, int length) =>
@@ -232,7 +236,7 @@ public sealed partial class WinUsbBackend
                         if (error != Native.ERROR_IO_PENDING) throw Error(error, operation);
                     }
                     bool timedOut = false;
-                    uint wait = timeoutMilliseconds <= 0 ? Native.INFINITE : (uint)timeoutMilliseconds;
+                    uint wait = timeoutMilliseconds < 0 ? Native.INFINITE : (uint)timeoutMilliseconds;
                     if (Native.WaitForSingleObject(ev, wait) == Native.WAIT_TIMEOUT)
                     {
                         timedOut = true;
@@ -245,8 +249,8 @@ public sealed partial class WinUsbBackend
                     if (result == Native.ERROR_OPERATION_ABORTED)
                     {
                         // Data that an IN transfer received before it was cancelled is lost.
-                        if (Volatile.Read(ref _disposed) != 0) throw UsbTransferHelpers.Disposed();
-                        if (timedOut) throw UsbTransferHelpers.TimedOut(operation);
+                        if (Volatile.Read(ref _disposed) != 0) throw UsbErrors.Disposed();
+                        if (timedOut) throw UsbErrors.TimedOut(operation);
                     }
                     throw Error(result, operation);
                 }
@@ -269,7 +273,7 @@ public sealed partial class WinUsbBackend
             {
                 ev = Native.CreateEventW(0, true, false, 0);
                 if (ev == 0)
-                    throw new VisaException(VisaStatus.ErrorSystemError, $"CreateEvent failed (Win32 error {Marshal.GetLastPInvokeError()}).");
+                    throw CreateEventFailed(Marshal.GetLastPInvokeError());
             }
             Native.ResetEvent(ev);
             return ev;
@@ -458,7 +462,7 @@ public sealed partial class WinUsbBackend
                 if (_error == 0) return (int)_transferred;
                 // Cancelled by the deadline, the caller's token or Dispose.
                 if (_error == Native.ERROR_OPERATION_ABORTED && (_cancelled || disposed || cancellationToken.IsCancellationRequested))
-                    throw UsbTransferHelpers.Interrupted(operation, cancellationToken, disposed);
+                    throw UsbErrors.Interrupted(operation, cancellationToken, disposed);
                 throw Error((int)_error, operation);
             }
         }

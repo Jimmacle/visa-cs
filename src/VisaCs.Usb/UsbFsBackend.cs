@@ -15,7 +15,7 @@ namespace VisaCs.Usb;
 /// <see cref="Open"/> claims the interface. If a kernel driver (usually usbtmc) is bound to it, the driver is detached
 /// while the handle is open and reattached when the handle is disposed. An interface that another program has
 /// claimed through usbfs (or libusb) is never taken over: Open then fails with
-/// <see cref="VisaStatus.ErrorResourceBusy"/>.
+/// <see cref="UsbException"/> with <see cref="UsbError.Busy"/>.
 /// </para>
 /// <para>
 /// All transfers, synchronous ones included, are submitted as USB request blocks (URBs). The library's shared poll
@@ -122,7 +122,7 @@ public sealed partial class UsbFsBackend : IUsbBackend
     public IUsbDeviceHandle Open(UsbDeviceInfo device, int interfaceNumber)
     {
         if (!device.Location.StartsWith(DeviceNodes, StringComparison.Ordinal))
-            throw new VisaException(VisaStatus.ErrorInvalidObject, "The device was not enumerated by the usbfs backend.");
+            throw UsbErrors.ForeignDevice("usbfs");
         return new UsbFsDeviceHandle(device, interfaceNumber);
     }
 

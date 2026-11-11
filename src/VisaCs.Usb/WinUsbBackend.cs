@@ -138,7 +138,7 @@ public sealed partial class WinUsbBackend : IUsbBackend
     public IUsbDeviceHandle Open(UsbDeviceInfo device, int interfaceNumber)
     {
         if (device.BackendData is not DeviceData data)
-            throw new VisaException(VisaStatus.ErrorInvalidObject, "The device was not enumerated by the WinUSB backend.");
+            throw UsbErrors.ForeignDevice("WinUSB");
         var handle = new WinUsbDeviceHandle(device, data, interfaceNumber, DescriptorTimeoutMs);
         _known[device.Location] = handle.Device;
         return handle;

@@ -98,8 +98,10 @@ available on INSTR sessions too; like reads and writes, they are bounded by the 
 ## Sharing and attributes
 
 Operating-system USB handles are exclusive, so all sessions to the same USB interface that go through the same
-backend share one handle and one `UsbTmcDevice` client, which serializes their transfers (as NI-VISA does), counts
-the USBTMC bTags for all of them and reads the interrupt endpoint once for all. A session waits for another
+backend share one handle, one gate that serializes their transfers (as NI-VISA does) and one loop that reads the
+interrupt endpoint for all of them. INSTR sessions (and every session on a USBTMC interface) also share one
+`UsbTmcDevice` client, which takes the same gate, counts the USBTMC bTags for all of them and gets its status byte
+responses from the shared interrupt loop; RAW sessions transfer on the handle directly. A session waits for another
 session's transfer at most until its own timeout. Resource managers that use different backend instances do not
 share handles: the second one to open the interface gets `VI_ERROR_RSRC_BUSY`, as does another program.
 
@@ -113,15 +115,26 @@ pipe addresses (`VI_ATTR_USB_BULK_IN_PIPE`, `..._BULK_OUT_PIPE`, `..._INTR_IN_PI
 
 The `VisaCs.Usb` library works on its own. It has the backends, for any USB device with a bulk or interrupt
 interface, and `UsbTmcDevice`, the USBTMC/USB488 client that `UsbSession` is built on. The driver setup above
-applies (WinUSB on Windows, usbfs access rights on Linux, libusb elsewhere). The library's types are in the
-`VisaCs.Usb` namespace, except `UsbTmcCapabilities`; the exceptions it throws (`VisaException`,
-`VisaTimeoutException`) and `VisaStatus` come from `VisaCs.Primitives`, in the `VisaCs` namespace.
+applies (WinUSB on Windows, usbfs access rights on Linux, libusb elsewhere). The library depends on no other
+VisaCs package, and all its types are in the `VisaCs.Usb` namespace.
+
+Errors follow one scheme throughout:
+
+| Exception | When |
+|---|---|
+| `UsbException` (an `IOException`) | a device, driver, operating system or protocol failure. `Error` (`UsbError`) says which: `NotFound`, `Busy`, `AccessDenied`, `Disconnected`, `Stall`, `IOError`, `ProtocolError` (a USBTMC failure status or invalid message), `NotSupported` (the interface lacks the capability), `LibraryNotFound` (libusb), `OutOfMemory` (libusb), `Aborted`, `SystemError`. `NativeError` holds the Win32 error, errno or libusb error code when there is one. |
+| `UsbTimeoutException` (a `TimeoutException`) | a transfer or call ran out of time; `BytesTransferred` is 0 for the built-in backends (a timed-out transfer's data is discarded) |
+| `OperationCanceledException` | the caller cancelled an asynchronous call |
+| `ArgumentException`, `ObjectDisposedException`, `InvalidOperationException` | programming errors: a device enumerated by another backend, a disposed handle or client, ... |
+
+Every `timeoutMilliseconds` follows one rule: negative (`Timeout.Infinite`) waits without limit, 0 does not wait
+(the operation fails with a timeout unless it can complete at once), and a positive value is the limit in
+milliseconds.
 
 ### USBTMC instruments
 
 ```csharp
 using System.Text;
-using VisaCs;       // VisaException, VisaTimeoutException, VisaStatus, UsbTmcCapabilities
 using VisaCs.Usb;
 
 using var usb = UsbBackends.CreateDefault() ?? throw new PlatformNotSupportedException("No USB backend.");
@@ -154,29 +167,35 @@ if (tmc.HasInterruptEndpoint)
   `ReadMessage` reads until EOM, and `Query` writes and reads with no other caller's operation in between. With
   `termChar`, a device that reports `SupportsTermChar` ends the transfer after that byte. `WriteVendorSpecific` and
   `ReadVendorSpecific` send VENDOR_SPECIFIC_OUT and REQUEST_VENDOR_SPECIFIC_IN messages.
-- **Timeouts and cancellation.** `timeoutMilliseconds` bounds the whole call; `Timeout.Infinite` (-1) waits without
-  limit. A bulk transfer that times out or is cancelled is followed by the USBTMC abort sequence, so the next
-  message works. Timeouts throw `VisaTimeoutException`, cancelling an asynchronous call throws
+- **Timeouts and cancellation.** `timeoutMilliseconds` bounds the whole call, including the wait for another
+  caller's operation: -1 waits without limit, 0 does not wait (the call succeeds only if the device is free and
+  every transfer completes at once). A bulk transfer that times out or is cancelled is followed by the USBTMC abort
+  sequence, so the next message works. Timeouts throw `UsbTimeoutException`, cancelling an asynchronous call throws
   `OperationCanceledException`. Class requests (clear, status byte, remote/local) wait at most 5 seconds when the
-  timeout is infinite.
+  timeout is infinite, and at least 1 millisecond.
 - **Capabilities.** `UsbTmcDevice.Open` reads them; over a handle you opened yourself
-  (`new UsbTmcDevice(handle)`), call `ReadCapabilities`. Trigger, remote/local control and `IndicatorPulse` throw
-  `VisaStatus.ErrorOperationNotSupported` unless the capabilities allow them; the status byte, trigger and
+  (`new UsbTmcDevice(handle)`), call `ReadCapabilities`. `Capabilities` may be read from any thread, also while
+  another thread reads them from the device. Trigger, remote/local control and `IndicatorPulse` throw
+  `UsbException` with `UsbError.NotSupported` unless the capabilities allow them; the status byte, trigger and
   remote/local control need a USB488 interface.
 - **Status byte and SRQ.** `ReadStatusByte` matches the response on the interrupt endpoint to its request by bTag,
   also while interrupt handlers run. Handlers get every other interrupt packet (`IsServiceRequest`, `StatusByte`,
   `Data`) on a read loop that holds no thread while idle.
 - **Sharing.** One instance may be used from several threads: each operation has the device to itself and bTags
-  never repeat. `ControlTransfer` and `RunExclusive` run other transfers between the client's operations.
-- **Errors.** `VisaStatus.ErrorIO` when the device reports a failure or sends an invalid header,
-  `ErrorOperationNotSupported` as above, and the handle's own errors for failed transfers.
+  never repeat. `ControlTransfer` and `RunExclusive` run other transfers between the client's operations. Code that
+  uses the same handle without the client can take turns with it through a shared gate
+  (`new UsbTmcDevice(handle, leaveOpen: true, gate)`, a `SemaphoreSlim(1, 1)` that the other code also takes), and
+  can own the interrupt-IN endpoint: set `ExternalInterruptReader` and pass every packet read there to
+  `ProcessInterrupt`, which keeps the status byte responses (returns true) and leaves the rest to the caller. The VISA
+  sessions share one interface between INSTR and RAW sessions this way.
+- **Errors.** `UsbException` with `UsbError.ProtocolError` when the device reports a failure or sends an invalid
+  header, `UsbError.NotSupported` as above, and the handle's own errors for failed transfers.
 
 ### Raw transfers
 
 For devices that are not USBTMC instruments, use the handle directly:
 
 ```csharp
-using VisaCs;       // VisaException, VisaTimeoutException, VisaStatus
 using VisaCs.Usb;
 
 using var usb = UsbBackends.CreateDefault() ?? throw new PlatformNotSupportedException("No USB backend.");
@@ -203,24 +222,26 @@ var interruptIn = handle.Interface.FindEndpoint(UsbTransferType.Interrupt, input
 if (interruptIn is not null)
 {
     var packet = new byte[interruptIn.MaxPacketSize];
-    int length = await handle.InterruptTransferAsync(interruptIn.Address, packet, timeoutMilliseconds: 0, cts.Token);
+    int length = await handle.InterruptTransferAsync(interruptIn.Address, packet, Timeout.Infinite, cts.Token);
 }
 ```
 
 - **Directions.** The direction of a transfer comes from bit 7 of the endpoint address (or of the request type,
   for control transfers). An IN transfer returns the number of bytes received, which can be fewer than the buffer
   holds. A control transfer carries at most 65535 bytes.
-- **Timeouts.** `timeoutMilliseconds` bounds one transfer; 0 and `Timeout.Infinite` (-1) wait without limit. A
-  transfer that times out is cancelled in the operating system and throws `VisaTimeoutException`; data that an IN
+- **Timeouts.** `timeoutMilliseconds` bounds one transfer: `Timeout.Infinite` (-1) waits without limit, 0 does not
+  wait (the transfer fails unless it completes at once; libusb, which has no such mode, gets 1 ms). WinUSB and libusb
+  themselves read 0 as "no limit"; the backends translate. A
+  transfer that times out is cancelled in the operating system and throws `UsbTimeoutException`; data that an IN
   transfer had already received is discarded, and an OUT transfer may have been partly sent, so resynchronize with
   the device afterwards (`UsbTmcDevice` does that for USBTMC devices).
 - **Cancellation.** Cancelling the token of an asynchronous transfer cancels it in the operating system before
   the call returns, then throws `OperationCanceledException`; the device stays usable. With libusb on macOS this
   also aborts the other transfers pending on the same endpoint.
-- **Errors.** `VisaException` with `VisaStatus.ErrorConnectionLost` when the device is unplugged and
-  `ErrorIO` when an endpoint stalls (call `ClearHalt`) or a transfer fails otherwise. `Open` throws
-  `ErrorResourceNotFound`, `ErrorResourceBusy` (the interface is claimed elsewhere), `ErrorNoPermission` or
-  `ErrorInvalidObject` (a device enumerated by another backend).
+- **Errors.** `UsbException` with `UsbError.Disconnected` when the device is unplugged, `Stall` when an endpoint
+  stalls (call `ClearHalt`) and `IOError` when a transfer fails otherwise. `Open` throws `UsbException` with
+  `NotFound`, `Busy` (the interface is claimed elsewhere) or `AccessDenied`, and `ArgumentException` for a device
+  enumerated by another backend.
 - **Threads.** All handle members may be called from any thread, concurrently: synchronous and asynchronous
   transfers mix, on different endpoints (for example an interrupt-IN read while bulk transfers run) or on the same
   one, where they complete in order. WinUSB completes asynchronous transfers on the I/O completion port, usbfs
@@ -238,8 +259,16 @@ Implement `IUsbBackend` (`Name`, `EnumerateDevices`, `Open`, `Dispose`) and `IUs
 interrupt transfers, synchronous and asynchronous, and `ClearHalt`); their XML documentation is the contract.
 `UsbDescriptorParser` decodes standard descriptors. In particular:
 
-- Throw `VisaTimeoutException` on timeouts, so that the USBTMC abort handling of `UsbTmcDevice` runs, and cancel
+- Follow the timeout rule: negative waits without limit, 0 does not wait (fail with a timeout unless the transfer
+  completes at once). Translate it when the driver stack reads 0 as "no limit".
+- Throw `UsbTimeoutException` on timeouts, so that the USBTMC abort handling of `UsbTmcDevice` runs, and cancel
   the transfer in the operating system before throwing.
+- Throw `UsbException` for device, driver and operating system failures, with the `UsbError` that fits (`NotFound`,
+  `Busy` or `AccessDenied` from `Open`; `Disconnected`, `Stall` or `IOError` from transfers; ...) and the native
+  error code in `NativeError`. The VISA sessions turn these into VISA status codes (`NotFound` into
+  `VI_ERROR_RSRC_NFOUND`, `Busy` into `VI_ERROR_RSRC_BUSY`, `Disconnected` into `VI_ERROR_CONN_LOST`, ...), so a
+  backend that throws anything else breaks their error reporting. Use `ArgumentException` for a device the backend
+  did not enumerate.
 - Asynchronous methods throw `OperationCanceledException` when their token is cancelled, and every method throws
   `ObjectDisposedException` once the handle is disposed (a transfer pending at that moment too).
 - Support concurrent transfers on different endpoints: `UsbTmcDevice` keeps an interrupt-IN read pending while

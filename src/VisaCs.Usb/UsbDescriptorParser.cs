@@ -31,12 +31,12 @@ public static class UsbDescriptorParser
         byte ManufacturerIndex, byte ProductIndex, byte SerialNumberIndex, byte NumConfigurations, byte MaxPacketSize0);
 
     /// <summary>
-    /// Parses an 18-byte device descriptor. Throws <see cref="VisaException"/> (<see cref="VisaStatus.ErrorIO"/>)
+    /// Parses an 18-byte device descriptor. Throws <see cref="UsbException"/> (<see cref="UsbError.ProtocolError"/>)
     /// when the data is not a device descriptor.
     /// </summary>
     public static DeviceDescriptor ParseDevice(ReadOnlySpan<byte> d)
     {
-        if (d.Length < 18 || d[1] != DescriptorDevice) throw new VisaException(VisaStatus.ErrorIO, "Invalid USB device descriptor.");
+        if (d.Length < 18 || d[1] != DescriptorDevice) throw UsbErrors.Protocol("Invalid USB device descriptor.");
         return new DeviceDescriptor(
             BinaryPrimitives.ReadUInt16LittleEndian(d[8..]),
             BinaryPrimitives.ReadUInt16LittleEndian(d[10..]),
@@ -120,7 +120,7 @@ public static class UsbDescriptorParser
             n = handle.ControlTransfer(0x80, 6, (ushort)(0x0300 | index), language, buffer, timeoutMilliseconds);
             return ParseString(buffer[..n]);
         }
-        catch (VisaException)
+        catch (Exception ex) when (ex is UsbException or UsbTimeoutException)
         {
             return null;
         }

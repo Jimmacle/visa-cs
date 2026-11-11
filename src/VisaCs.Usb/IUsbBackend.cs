@@ -10,7 +10,7 @@ namespace VisaCs.Usb;
 /// <para>
 /// Members may be called from any thread. Opening a device claims the interface exclusively: a second
 /// <see cref="Open"/> of the same interface, from this process or another one, fails with
-/// <see cref="VisaStatus.ErrorResourceBusy"/> until the first handle is disposed.
+/// <see cref="UsbError.Busy"/> until the first handle is disposed.
 /// </para>
 /// <para>
 /// Dispose the handles before the backend. Disposing <see cref="LibUsbBackend"/> closes the handles it opened and
@@ -45,10 +45,10 @@ public interface IUsbBackend : IDisposable
     /// <remarks>
     /// On Linux, a kernel driver bound to the interface (usually usbtmc) is detached while the handle is open and
     /// reattached when it is disposed; an interface claimed by another program is never taken over. Throws
-    /// <see cref="VisaException"/> with <see cref="VisaStatus.ErrorResourceNotFound"/> (device gone, no such
-    /// interface, or not bound to WinUSB), <see cref="VisaStatus.ErrorResourceBusy"/> (claimed by another handle or
-    /// program), <see cref="VisaStatus.ErrorNoPermission"/> (no access to the device node) or
-    /// <see cref="VisaStatus.ErrorInvalidObject"/> (the device was enumerated by another backend).
+    /// <see cref="UsbException"/> with <see cref="UsbError.NotFound"/> (device gone, no such interface, or not bound
+    /// to WinUSB), <see cref="UsbError.Busy"/> (claimed by another handle or program) or
+    /// <see cref="UsbError.AccessDenied"/> (no access to the device node), and <see cref="ArgumentException"/> when
+    /// <paramref name="device"/> was enumerated by another backend.
     /// </remarks>
     IUsbDeviceHandle Open(UsbDeviceInfo device, int interfaceNumber);
 }

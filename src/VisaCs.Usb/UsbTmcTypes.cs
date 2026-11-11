@@ -21,20 +21,3 @@ public sealed class UsbTmcInterrupt(byte[] data)
     /// <summary>The status byte of a USB488 notification; 0 for other packets.</summary>
     public byte StatusByte => IsUsb488Notification ? Data[1] : (byte)0;
 }
-
-/// <summary>The exceptions the USBTMC client creates itself (transfer errors come from the handle).</summary>
-internal static class UsbTmcErrors
-{
-    /// <summary>The device answered with a failure status or an invalid message.</summary>
-    public static VisaException Io(string message) => new(VisaStatus.ErrorIO, message);
-
-    /// <summary>The operation ran out of time.</summary>
-    public static VisaTimeoutException Timeout(string? message) => new(message);
-
-    /// <summary>The interface lacks what the operation needs.</summary>
-    public static VisaException NotSupported(string operation) =>
-        new(VisaStatus.ErrorOperationNotSupported, $"{operation} is not supported by this device.");
-
-    /// <summary>The device has no such interface, or it is no USBTMC interface.</summary>
-    public static VisaException NotFound(string message) => new(VisaStatus.ErrorResourceNotFound, message);
-}

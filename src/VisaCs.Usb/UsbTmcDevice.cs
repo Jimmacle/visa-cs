@@ -11,23 +11,26 @@ namespace VisaCs.Usb;
 /// <remarks>
 /// <para>
 /// <b>Timeouts.</b> <c>timeoutMilliseconds</c> bounds the whole call, including the wait for another caller's
-/// operation; <see cref="Timeout.Infinite"/> (-1) waits without limit, and 0 has already expired (unlike the
-/// timeout of a single <see cref="IUsbDeviceHandle"/> transfer, where 0 means no limit). A call that runs out of time
-/// throws <see cref="VisaTimeoutException"/>; cancelling the token of an asynchronous call throws
-/// <see cref="OperationCanceledException"/>. When a bulk transfer times out or is cancelled, the USBTMC abort sequence
-/// (INITIATE_ABORT_BULK_OUT/IN) runs with its own short timeouts, so the device is ready for the next message.
-/// Class requests (clear, status byte, remote/local) wait at most 5 seconds when the timeout is infinite.
+/// operation: a negative value (<see cref="Timeout.Infinite"/>) waits without limit, and 0 does not wait (the call
+/// fails with a timeout unless the device is free and every transfer completes at once), as for a single
+/// <see cref="IUsbDeviceHandle"/> transfer. A call that runs out of time throws <see cref="UsbTimeoutException"/>;
+/// cancelling the token of an asynchronous call throws <see cref="OperationCanceledException"/>. When a bulk transfer
+/// times out or is cancelled, the USBTMC abort sequence (INITIATE_ABORT_BULK_OUT/IN) runs with its own short
+/// timeouts, so the device is ready for the next message. Class requests (clear, status byte, remote/local) wait at
+/// most 5 seconds when the timeout is infinite, and at least 1 millisecond.
 /// </para>
 /// <para>
 /// <b>Sharing.</b> All members may be called from any thread. Each operation (a message write, a read transfer, a
 /// <see cref="Query"/>, a clear, ...) has the device to itself; others wait for it. bTags are counted per instance, so
 /// several users of one instance never repeat the previous header's bTag, and status byte responses on the
-/// interrupt endpoint reach the caller that asked for them.
+/// interrupt endpoint reach the caller that asked for them. Other code that uses the same handle can take turns with
+/// this instance through a shared gate (see the constructor), and can own the interrupt-IN endpoint itself (see
+/// <see cref="ExternalInterruptReader"/>).
 /// </para>
 /// <para>
-/// <b>Errors.</b> <see cref="VisaException"/> with <see cref="VisaStatus.ErrorIO"/> when the device answers with a
-/// failure status or an invalid message, <see cref="VisaStatus.ErrorOperationNotSupported"/> when the interface lacks
-/// the capability, and whatever the <see cref="IUsbDeviceHandle"/> throws for failed transfers.
+/// <b>Errors.</b> <see cref="UsbException"/> with <see cref="UsbError.ProtocolError"/> when the device answers with a
+/// failure status or an invalid message, <see cref="UsbError.NotSupported"/> when the interface lacks the capability,
+/// and whatever the <see cref="IUsbDeviceHandle"/> throws for failed transfers.
 /// </para>
 /// </remarks>
 public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
@@ -71,7 +74,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
     private readonly int _interruptPacketSize;
     private readonly ushort _interfaceNumber;
 
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _gate;
     private byte[] _transferBuffer = new byte[HeaderSize + MessageChunkSize];
     private readonly byte[] _requestHeader = new byte[HeaderSize];
 
@@ -85,7 +88,11 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
     private readonly List<Action<UsbTmcInterrupt>> _handlers = new(); // also the lock of the reader fields
     private CancellationTokenSource? _readerStop;
     private Task? _reader;
+    private volatile bool _externalReader;
     private volatile bool _disposed;
+
+    // Replaced as a whole, so that readers on other threads never see a half-written value.
+    private volatile object? _capabilities; // boxed UsbTmcCapabilities
 
     /// <summary>
     /// Creates the client over an opened interface. Does no I/O: call <see cref="ReadCapabilities"/> to learn what
@@ -93,16 +100,21 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
     /// </summary>
     /// <param name="handle">The interface, normally a USBTMC interface (class 0xFE, subclass 3).</param>
     /// <param name="leaveOpen">True to leave <paramref name="handle"/> open when this instance is disposed.</param>
+    /// <param name="gate">
+    /// A semaphore with a count of 1 that other users of <paramref name="handle"/> also take around their transfers,
+    /// so that they and this instance take turns; it is not disposed with this instance. Null for a private one.
+    /// </param>
     /// <remarks>
     /// An interface without bulk endpoints is accepted; the message operations then throw
-    /// <see cref="VisaStatus.ErrorOperationNotSupported"/>. <see cref="ControlTransfer"/>,
+    /// <see cref="UsbError.NotSupported"/>. <see cref="ControlTransfer"/>,
     /// <see cref="RunExclusive{T}"/> and the interrupt handlers work on any interface.
     /// </remarks>
-    public UsbTmcDevice(IUsbDeviceHandle handle, bool leaveOpen = false)
+    public UsbTmcDevice(IUsbDeviceHandle handle, bool leaveOpen = false, SemaphoreSlim? gate = null)
     {
         ArgumentNullException.ThrowIfNull(handle);
         _handle = handle;
         _leaveOpen = leaveOpen;
+        _gate = gate ?? new SemaphoreSlim(1, 1);
         var info = handle.Interface;
         var bulkOut = info.FindEndpoint(UsbTransferType.Bulk, input: false);
         var bulkIn = info.FindEndpoint(UsbTransferType.Bulk, input: true);
@@ -125,8 +137,8 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
     /// <param name="interfaceNumber">The interface to open; null for the first USBTMC interface.</param>
     /// <param name="timeoutMilliseconds">Time for the GET_CAPABILITIES request. When the device does not answer,
     /// <see cref="Capabilities"/> stays all false.</param>
-    /// <exception cref="VisaException">
-    /// <see cref="VisaStatus.ErrorResourceNotFound"/> when the device has no such interface or the interface has no bulk
+    /// <exception cref="UsbException">
+    /// <see cref="UsbError.NotFound"/> when the device has no such interface or the interface has no bulk
     /// endpoints, or an error of <see cref="IUsbBackend.Open"/>.
     /// </exception>
     public static UsbTmcDevice Open(IUsbBackend backend, UsbDeviceInfo device, int? interfaceNumber = null, int timeoutMilliseconds = 5000)
@@ -143,7 +155,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
             var info = device.Interfaces.FirstOrDefault(i => i.IsUsbTmc)
                 // The backend could not read the interfaces without opening the device: try its first interface.
                 ?? (device.Interfaces.All(i => i.Endpoints.Count == 0) ? device.Interfaces.FirstOrDefault() : null)
-                ?? throw UsbTmcErrors.NotFound($"{device} has no USBTMC interface.");
+                ?? throw UsbErrors.NotFound($"{device} has no USBTMC interface.");
             number = info.Number;
         }
 
@@ -152,12 +164,12 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         try
         {
             if (tmc._bulkOut < 0 || tmc._bulkIn < 0)
-                throw UsbTmcErrors.NotFound($"USB interface {number} of {device} has no bulk endpoints; it is not a USBTMC interface.");
+                throw UsbErrors.NotFound($"USB interface {number} of {device} has no bulk endpoints; it is not a USBTMC interface.");
             try
             {
                 tmc.ReadCapabilities(timeoutMilliseconds);
             }
-            catch (VisaException)
+            catch (Exception ex) when (ex is UsbException or UsbTimeoutException)
             {
                 // Capabilities stay all false.
             }
@@ -182,14 +194,14 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
     /// <summary>
     /// The capabilities of the last successful <see cref="ReadCapabilities"/>; all false until then. They decide
     /// whether the device handles a termination character, and whether trigger, remote/local control and
-    /// INDICATOR_PULSE are allowed.
+    /// INDICATOR_PULSE are allowed. Safe to read while another thread reads the capabilities.
     /// </summary>
-    public UsbTmcCapabilities Capabilities { get; private set; }
+    public UsbTmcCapabilities Capabilities => _capabilities is UsbTmcCapabilities c ? c : default;
 
     // ------------------------------------------------------------------ public API
 
     /// <summary>Reads the device's GET_CAPABILITIES response and stores it in <see cref="Capabilities"/>.</summary>
-    /// <exception cref="VisaException"><see cref="VisaStatus.ErrorIO"/> when the device reports a failure or answers too briefly.</exception>
+    /// <exception cref="UsbException"><see cref="UsbError.ProtocolError"/> when the device reports a failure or answers too briefly.</exception>
     public UsbTmcCapabilities ReadCapabilities(int timeoutMilliseconds) =>
         AsyncIO.Complete(ReadCapabilitiesCoreAsync(Start(timeoutMilliseconds, default), async: false));
 
@@ -200,7 +212,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         {
             return await ReadCapabilitiesCoreAsync(Start(timeoutMilliseconds, cancellationToken), async: true).ConfigureAwait(false);
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
@@ -298,7 +310,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
             using (await EnterAsync(deadline, async: true).ConfigureAwait(false))
                 return await ReadMessageCoreAsync(deadline, async: true).ConfigureAwait(false);
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
@@ -330,7 +342,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
                 return await ReadMessageCoreAsync(deadline, async: true).ConfigureAwait(false);
             }
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
@@ -351,7 +363,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
     /// Reads the status byte with the USB488 READ_STATUS_BYTE request. With an interrupt-IN endpoint the device sends
     /// the byte there; it is matched to this request by its bTag.
     /// </summary>
-    /// <exception cref="VisaException"><see cref="VisaStatus.ErrorOperationNotSupported"/> on a non-USB488 interface.</exception>
+    /// <exception cref="UsbException"><see cref="UsbError.NotSupported"/> on a non-USB488 interface.</exception>
     public byte ReadStatusByte(int timeoutMilliseconds)
     {
         var deadline = Start(timeoutMilliseconds, default);
@@ -368,15 +380,15 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
             using (await EnterAsync(deadline, async: true).ConfigureAwait(false))
                 return await ReadStatusByteCoreAsync(deadline, async: true).ConfigureAwait(false);
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
     }
 
     /// <summary>Sends the USB488 TRIGGER message.</summary>
-    /// <exception cref="VisaException">
-    /// <see cref="VisaStatus.ErrorOperationNotSupported"/> unless the interface is USB488 and
+    /// <exception cref="UsbException">
+    /// <see cref="UsbError.NotSupported"/> unless the interface is USB488 and
     /// <see cref="UsbTmcCapabilities.AcceptsTrigger"/> is set.
     /// </exception>
     public void Trigger(int timeoutMilliseconds) => AsyncIO.Complete(RunAsync(static (d, dl, async) => d.TriggerCoreAsync(dl, async),
@@ -387,8 +399,8 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         RunPublicAsync(static (d, dl, async) => d.TriggerCoreAsync(dl, async), timeoutMilliseconds, cancellationToken);
 
     /// <summary>Asserts or deasserts remote enable (USB488 REN_CONTROL).</summary>
-    /// <exception cref="VisaException">
-    /// <see cref="VisaStatus.ErrorOperationNotSupported"/> unless the interface is USB488 and
+    /// <exception cref="UsbException">
+    /// <see cref="UsbError.NotSupported"/> unless the interface is USB488 and
     /// <see cref="UsbTmcCapabilities.AcceptsRenControl"/> is set.
     /// </exception>
     public void RenControl(bool enable, int timeoutMilliseconds) =>
@@ -415,8 +427,8 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         Usb488RequestPublicAsync(LocalLockoutRequest, 0, timeoutMilliseconds, cancellationToken);
 
     /// <summary>Asks the device to flash its activity indicator (USBTMC INDICATOR_PULSE).</summary>
-    /// <exception cref="VisaException">
-    /// <see cref="VisaStatus.ErrorOperationNotSupported"/> unless <see cref="UsbTmcCapabilities.AcceptsIndicatorPulse"/> is set.
+    /// <exception cref="UsbException">
+    /// <see cref="UsbError.NotSupported"/> unless <see cref="UsbTmcCapabilities.AcceptsIndicatorPulse"/> is set.
     /// </exception>
     public void IndicatorPulse(int timeoutMilliseconds) =>
         AsyncIO.Complete(RunAsync(static (d, dl, async) => d.IndicatorPulseCoreAsync(dl, async), Start(timeoutMilliseconds, default), async: false));
@@ -447,7 +459,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
                 return await _handle.ControlTransferAsync(requestType, request, value, index, buffer, ToUsbTimeout(deadline), cancellationToken)
                     .ConfigureAwait(false);
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
@@ -475,7 +487,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
             using (await EnterAsync(Start(timeoutMilliseconds, cancellationToken), async: true).ConfigureAwait(false))
                 return await action(_handle, cancellationToken).ConfigureAwait(false);
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
@@ -489,12 +501,13 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
     /// (holding no thread while idle); handlers run on that loop and must return quickly. Status byte responses to
     /// <see cref="ReadStatusByte"/> of a USB488 interface are not passed on. A handler that throws is ignored.
     /// </summary>
-    /// <exception cref="VisaException"><see cref="VisaStatus.ErrorOperationNotSupported"/> when the interface has no interrupt-IN endpoint.</exception>
+    /// <exception cref="UsbException"><see cref="UsbError.NotSupported"/> when the interface has no interrupt-IN endpoint.</exception>
     public void AddInterruptHandler(Action<UsbTmcInterrupt> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_interruptIn < 0) throw UsbTmcErrors.NotSupported("Receiving interrupt packets (the interface has no interrupt-IN endpoint)");
+        if (_interruptIn < 0) throw UsbErrors.NotSupported("Receiving interrupt packets (the interface has no interrupt-IN endpoint)");
+        if (_externalReader) throw new InvalidOperationException("Other code reads the interrupt endpoint (ExternalInterruptReader is set).");
         lock (_handlers)
         {
             _handlers.Add(handler);
@@ -562,7 +575,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
             int n;
             try
             {
-                n = await _handle.InterruptTransferAsync((byte)_interruptIn, packet, 0, stop).ConfigureAwait(false);
+                n = await _handle.InterruptTransferAsync((byte)_interruptIn, packet, Timeout.Infinite, stop).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {
@@ -572,7 +585,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
             {
                 return;
             }
-            catch (VisaTimeoutException)
+            catch (UsbTimeoutException)
             {
                 continue;
             }
@@ -585,18 +598,41 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// True while other code reads the interrupt-IN endpoint and passes every packet to <see cref="ProcessInterrupt"/>,
+    /// for example to share the endpoint with code that uses the same handle outside the USBTMC protocol.
+    /// <see cref="ReadStatusByte"/> then waits for the status byte response to arrive that way instead of reading the
+    /// endpoint itself, and <see cref="AddInterruptHandler"/> throws <see cref="InvalidOperationException"/>.
+    /// </summary>
+    public bool ExternalInterruptReader
+    {
+        get => _externalReader;
+        set => _externalReader = value;
+    }
+
+    /// <summary>
+    /// Takes a packet that other code read from the interrupt-IN endpoint (see <see cref="ExternalInterruptReader"/>).
+    /// Returns true when it was a USB488 status byte response, which this instance hands to the
+    /// <see cref="ReadStatusByte"/> caller waiting for it; false for any other packet, which the caller handles itself.
+    /// </summary>
+    public bool ProcessInterrupt(ReadOnlySpan<byte> packet)
+    {
+        if (!IsStatusResponse(packet)) return false;
+        lock (_tagSync)
+        {
+            _statusResponses.Enqueue(((byte)(packet[0] & 0x7F), packet[1]));
+            _statusChanged.Pulse();
+        }
+        return true;
+    }
+
+    /// <summary>A USB488 READ_STATUS_BYTE response: [0x80 | bTag, STB], with bTag 2..127 (1 is a service request).</summary>
+    private bool IsStatusResponse(ReadOnlySpan<byte> data) => IsUsb488 && data.Length >= 2 && (data[0] & 0x80) != 0 && (data[0] & 0x7F) > 1;
+
     /// <summary>Queues a USB488 status byte response for its requester, and passes anything else to the handlers.</summary>
     private void Dispatch(byte[] data)
     {
-        if (IsUsb488 && data.Length >= 2 && (data[0] & 0x80) != 0 && (data[0] & 0x7F) > 1)
-        {
-            lock (_tagSync)
-            {
-                _statusResponses.Enqueue(((byte)(data[0] & 0x7F), data[1]));
-                _statusChanged.Pulse();
-            }
-            return;
-        }
+        if (ProcessInterrupt(data)) return;
         Action<UsbTmcInterrupt>[] handlers;
         lock (_handlers) handlers = _handlers.ToArray();
         if (handlers.Length == 0) return;
@@ -657,7 +693,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         bool entered = async
             ? await _gate.WaitAsync(timeout, deadline.CancellationToken).ConfigureAwait(false)
             : _gate.Wait(timeout, deadline.CancellationToken);
-        if (!entered) throw UsbTmcErrors.Timeout("Another operation kept the USB device busy until the timeout.");
+        if (!entered) throw UsbErrors.Timeout("Another operation kept the USB device busy until the timeout.");
         return new IOGate.Releaser(_gate);
     }
 
@@ -674,7 +710,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         {
             await RunAsync(operation, Start(timeoutMilliseconds, cancellationToken), async: true).ConfigureAwait(false);
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
@@ -684,7 +720,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         RunAsync(async (d, dl, a) =>
         {
             if (!d.IsUsb488 || !d.Capabilities.AcceptsRenControl)
-                throw UsbTmcErrors.NotSupported("Remote/local control on a device without USB488 REN_CONTROL capability");
+                throw UsbErrors.NotSupported("Remote/local control on a device without USB488 REN_CONTROL capability");
             await d.ControlRequestAsync(request, value, dl, a).ConfigureAwait(false);
         }, deadline, async);
 
@@ -694,7 +730,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         {
             await Usb488RequestAsync(request, value, Start(timeoutMilliseconds, cancellationToken), async: true).ConfigureAwait(false);
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
@@ -708,7 +744,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
             using (await EnterAsync(deadline, async: true).ConfigureAwait(false))
                 await WriteCoreAsync(data, messageId, end, deadline, async: true).ConfigureAwait(false);
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
@@ -728,20 +764,17 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
                 return result;
             }
         }
-        catch (VisaException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when ((ex is UsbException or UsbTimeoutException) && cancellationToken.IsCancellationRequested)
         {
             throw AsyncIO.Canceled(ex, cancellationToken);
         }
     }
 
-    /// <summary>USB timeout for one transfer: 0 (no limit) when the deadline is infinite; throws when it has expired.</summary>
-    private static int ToUsbTimeout(Deadline deadline)
-    {
-        int remaining = deadline.RemainingMilliseconds;
-        if (remaining < 0) return 0; // infinite
-        if (remaining == 0) throw UsbTmcErrors.Timeout(null);
-        return remaining;
-    }
+    /// <summary>
+    /// USB timeout for one transfer: the remaining time, -1 (no limit) when the deadline is infinite, and 0 (do not
+    /// wait) when it has expired.
+    /// </summary>
+    private static int ToUsbTimeout(Deadline deadline) => deadline.RemainingMilliseconds;
 
     /// <summary>
     /// USB timeout for a class request that must end even when the timeout is infinite: the remaining time,
@@ -804,7 +837,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         int n = await ControlAsync(0xA1, GetCapabilities, 0, _interfaceNumber, c, ToUsbTimeout(deadline), deadline.CancellationToken, async)
             .ConfigureAwait(false);
         if (n < 6 || c[0] != StatusSuccess)
-            throw UsbTmcErrors.Io($"USBTMC GET_CAPABILITIES failed (status 0x{c[0]:X2}, {n} bytes).");
+            throw UsbErrors.Protocol($"USBTMC GET_CAPABILITIES failed (status 0x{c[0]:X2}, {n} bytes).");
         bool has488 = n >= 16;
         var capabilities = new UsbTmcCapabilities(
             BinaryPrimitives.ReadUInt16LittleEndian(c.AsSpan(2)),
@@ -812,7 +845,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
             has488 ? BinaryPrimitives.ReadUInt16LittleEndian(c.AsSpan(12)) : (ushort)0,
             has488 && (c[14] & 4) != 0, has488 && (c[14] & 2) != 0, has488 && (c[14] & 1) != 0,
             has488 && (c[15] & 8) != 0, has488 && (c[15] & 4) != 0, has488 && (c[15] & 2) != 0, has488 && (c[15] & 1) != 0);
-        Capabilities = capabilities;
+        _capabilities = capabilities; // a new box: published whole
         return capabilities;
     }
 
@@ -835,7 +868,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
 
     private void CheckBulkEndpoints()
     {
-        if (_bulkOut < 0 || _bulkIn < 0) throw UsbTmcErrors.NotSupported("USBTMC messages on an interface without bulk endpoints");
+        if (_bulkOut < 0 || _bulkIn < 0) throw UsbErrors.NotSupported("USBTMC messages on an interface without bulk endpoints");
     }
 
     private void WriteSync(ReadOnlySpan<byte> data, byte messageId, bool end, Deadline deadline)
@@ -870,9 +903,9 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         try
         {
             int sent = await BulkAsync(_bulkOut, packet, ToUsbTimeout(deadline), deadline.CancellationToken, async).ConfigureAwait(false);
-            if (sent < packet.Length) throw UsbTmcErrors.Io("Short USBTMC bulk-out transfer.");
+            if (sent < packet.Length) throw UsbErrors.Protocol("Short USBTMC bulk-out transfer.");
         }
-        catch (Exception ex) when (ex is VisaTimeoutException or OperationCanceledException)
+        catch (Exception ex) when (ex is UsbTimeoutException or OperationCanceledException)
         {
             await AbortBulkOutAsync(tag, async).ConfigureAwait(false);
             throw;
@@ -927,19 +960,19 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
                     if (n == 0 || n % _bulkInPacketSize != 0) break; // a short packet ends the transfer
                 }
             }
-            catch (Exception ex) when (ex is VisaTimeoutException or OperationCanceledException)
+            catch (Exception ex) when (ex is UsbTimeoutException or OperationCanceledException)
             {
                 await AbortBulkInAsync(tag, async).ConfigureAwait(false);
                 throw;
             }
 
-            if (received < HeaderSize) throw UsbTmcErrors.Io("Short USBTMC bulk-in transfer.");
+            if (received < HeaderSize) throw UsbErrors.Protocol("Short USBTMC bulk-in transfer.");
             var response = _transferBuffer.AsSpan(0, received);
             if (response[0] != (vendor ? VendorSpecificIn : DevDepMsgIn) || response[1] != tag || response[2] != (byte)~tag)
             {
                 // Stale data from an earlier aborted transfer: try again a few times.
                 if (attempt < 3) continue;
-                throw UsbTmcErrors.Io("Invalid USBTMC bulk-in header (bTag mismatch).");
+                throw UsbErrors.Protocol("Invalid USBTMC bulk-in header (bTag mismatch).");
             }
             int size = (int)Math.Min(BinaryPrimitives.ReadUInt32LittleEndian(response[4..]), (uint)request);
             size = Math.Min(size, received - HeaderSize);
@@ -1001,7 +1034,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
                     int r = await BulkAsync(_bulkIn, scratch, 100, default, async).ConfigureAwait(false);
                     if (r % _bulkInPacketSize != 0) break;
                 }
-                catch (VisaTimeoutException)
+                catch (UsbTimeoutException)
                 {
                     break;
                 }
@@ -1012,7 +1045,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
                 if (n < 1 || status[0] != StatusPending) break;
                 if ((status[1] & 1) != 0)
                 {
-                    try { await BulkAsync(_bulkIn, scratch, 100, default, async).ConfigureAwait(false); } catch (VisaTimeoutException) { }
+                    try { await BulkAsync(_bulkIn, scratch, 100, default, async).ConfigureAwait(false); } catch (UsbTimeoutException) { }
                 }
                 await DelayAsync(5, async).ConfigureAwait(false);
             }
@@ -1031,47 +1064,47 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         int n = await ControlAsync(0xA1, InitiateClear, 0, _interfaceNumber, status.AsMemory(0, 1), timeout, deadline.CancellationToken, async)
             .ConfigureAwait(false);
         if (n < 1 || status[0] != StatusSuccess)
-            throw UsbTmcErrors.Io($"USBTMC INITIATE_CLEAR failed (status 0x{status[0]:X2}).");
+            throw UsbErrors.Protocol($"USBTMC INITIATE_CLEAR failed (status 0x{status[0]:X2}).");
 
         var scratch = new byte[RoundUp(4096, _bulkInPacketSize)];
         while (true)
         {
             n = await ControlAsync(0xA1, CheckClearStatus, 0, _interfaceNumber, status, timeout, deadline.CancellationToken, async)
                 .ConfigureAwait(false);
-            if (n < 1) throw UsbTmcErrors.Io("USBTMC CHECK_CLEAR_STATUS failed.");
+            if (n < 1) throw UsbErrors.Protocol("USBTMC CHECK_CLEAR_STATUS failed.");
             if (status[0] != StatusPending) break;
             if (n >= 2 && (status[1] & 1) != 0)
             {
-                try { await BulkAsync(_bulkIn, scratch, 100, deadline.CancellationToken, async).ConfigureAwait(false); } catch (VisaTimeoutException) { }
+                try { await BulkAsync(_bulkIn, scratch, 100, deadline.CancellationToken, async).ConfigureAwait(false); } catch (UsbTimeoutException) { }
             }
             else
             {
                 await DelayAsync(5, async).ConfigureAwait(false);
             }
-            if (deadline.HasExpired) throw UsbTmcErrors.Timeout("USBTMC device clear did not complete.");
+            if (deadline.HasExpired) throw UsbErrors.Timeout("USBTMC device clear did not complete.");
         }
         _handle.ClearHalt((byte)_bulkOut);
     }
 
     private async ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async)
     {
-        if (!IsUsb488) throw UsbTmcErrors.NotSupported("Reading the status byte of a USBTMC (non-USB488) device");
+        if (!IsUsb488) throw UsbErrors.NotSupported("Reading the status byte of a USBTMC (non-USB488) device");
 
         byte tag = NextStatusTag();
         var response = new byte[3];
         int n = await ControlAsync(0xA1, ReadStatusByteRequest, tag, _interfaceNumber, response, ToRequestTimeout(deadline),
             deadline.CancellationToken, async).ConfigureAwait(false);
-        if (n < 1) throw UsbTmcErrors.Io("USB488 READ_STATUS_BYTE failed.");
+        if (n < 1) throw UsbErrors.Protocol("USB488 READ_STATUS_BYTE failed.");
         if (response[0] != StatusSuccess)
-            throw UsbTmcErrors.Io($"USB488 READ_STATUS_BYTE failed (status 0x{response[0]:X2}).");
+            throw UsbErrors.Protocol($"USB488 READ_STATUS_BYTE failed (status 0x{response[0]:X2}).");
 
         if (_interruptIn < 0) return response[2];
 
         // With an interrupt-IN endpoint, the status byte arrives there as [0x80 | bTag, STB].
-        if (ReaderRunning)
+        if (_externalReader || ReaderRunning)
         {
             return await TakeStatusResponseAsync(tag, deadline, async).ConfigureAwait(false)
-                ?? throw UsbTmcErrors.Timeout("No USB488 status byte notification received.");
+                ?? throw UsbErrors.Timeout("No USB488 status byte notification received.");
         }
         var packet = new byte[_interruptPacketSize];
         while (true)
@@ -1086,7 +1119,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
     private async ValueTask TriggerCoreAsync(Deadline deadline, bool async)
     {
         if (!IsUsb488 || !Capabilities.AcceptsTrigger)
-            throw UsbTmcErrors.NotSupported("TRIGGER on a device without USB488 trigger capability");
+            throw UsbErrors.NotSupported("TRIGGER on a device without USB488 trigger capability");
         CheckBulkEndpoints();
         var packet = new byte[HeaderSize];
         byte tag = NextTag();
@@ -1098,7 +1131,7 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
 
     private async ValueTask IndicatorPulseCoreAsync(Deadline deadline, bool async)
     {
-        if (!Capabilities.AcceptsIndicatorPulse) throw UsbTmcErrors.NotSupported("INDICATOR_PULSE");
+        if (!Capabilities.AcceptsIndicatorPulse) throw UsbErrors.NotSupported("INDICATOR_PULSE");
         await ControlRequestAsync(IndicatorPulseRequest, 0, deadline, async).ConfigureAwait(false);
     }
 
@@ -1109,6 +1142,6 @@ public sealed class UsbTmcDevice : IDisposable, IAsyncDisposable
         int n = await ControlAsync(0xA1, request, value, _interfaceNumber, status, ToRequestTimeout(deadline), deadline.CancellationToken, async)
             .ConfigureAwait(false);
         if (n < 1 || status[0] != StatusSuccess)
-            throw UsbTmcErrors.Io($"USBTMC request {request} failed (status 0x{status[0]:X2}).");
+            throw UsbErrors.Protocol($"USBTMC request {request} failed (status 0x{status[0]:X2}).");
     }
 }

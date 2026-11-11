@@ -26,10 +26,10 @@ public abstract class UsbSessionBase : MessageBasedSession
     private protected IUsbDeviceHandle Device => Shared?.Handle ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
 
     /// <summary>
-    /// The USBTMC client of the interface, shared with the other sessions to it. It serializes their operations;
-    /// RAW sessions use <see cref="UsbTmcDevice.RunExclusive{T}"/> for their transfers.
+    /// The interface, shared with the other sessions to it: its gate makes their operations take turns, and it reads
+    /// the interrupt endpoint for all of them.
     /// </summary>
-    private protected UsbTmcDevice Tmc => Shared?.Device ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
+    private protected SharedUsbDevice SharedDevice => Shared ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
 
     /// <summary>USB vendor ID (VI_ATTR_MANF_ID).</summary>
     public ushort ManufacturerId => Name.VendorId;
@@ -65,7 +65,7 @@ public abstract class UsbSessionBase : MessageBasedSession
         var backend = ResourceManager.UsbBackend
             ?? throw new VisaException(VisaStatus.ErrorLibraryNotFound, "No USB backend is available on this platform.");
         BackendName = backend.Name;
-        var device = backend.EnumerateDevices().FirstOrDefault(d =>
+        var device = UsbErrorMapping.Run(backend.EnumerateDevices).FirstOrDefault(d =>
                 d.VendorId == Name.VendorId && d.ProductId == Name.ProductId &&
                 (string.Equals(d.SerialNumber, Name.SerialNumber, StringComparison.OrdinalIgnoreCase) ||
                  (Name.SerialNumber.Length == 0 && d.SerialNumber.Length == 0)))
@@ -105,15 +105,18 @@ public abstract class UsbSessionBase : MessageBasedSession
         if (shared is not null) await shared.ReleaseAsync(async).ConfigureAwait(false);
     }
 
-    /// <summary>USB timeout for one transfer: 0 (no limit) when the deadline is infinite; throws when it has expired.</summary>
+    /// <summary>
+    /// The timeout for a call into the USB library: the remaining time, or -1 (no limit) when the deadline is infinite.
+    /// The library treats 0 as "do not wait", but the USB sessions fail a transfer whose time is up before it starts,
+    /// so this throws <see cref="VisaTimeoutException"/> (or <see cref="OperationCanceledException"/>) instead.
+    /// </summary>
     private protected static int ToUsbTimeout(Deadline deadline)
     {
         int remaining = deadline.RemainingMilliseconds;
-        if (remaining < 0) return 0; // infinite
-        if (remaining == 0) throw new VisaTimeoutException();
-        return remaining;
+        if (remaining != 0) return remaining;
+        deadline.CancellationToken.ThrowIfCancellationRequested();
+        throw new VisaTimeoutException();
     }
-
 
     /// <summary>
     /// Performs a control IN transfer on the default pipe (viUsbControlIn) and returns the bytes received, at most
@@ -166,10 +169,10 @@ public abstract class UsbSessionBase : MessageBasedSession
     private ValueTask<int> ControlTransferAsync(byte requestType, byte request, ushort value, ushort index, byte[] buffer,
         CancellationToken cancellationToken, bool async)
     {
-        int timeout = NewDeadline(cancellationToken).RemainingMilliseconds;
-        return async
-            ? Tmc.ControlTransferAsync(requestType, request, value, index, buffer, timeout, cancellationToken)
-            : new(Tmc.ControlTransfer(requestType, request, value, index, buffer, timeout));
+        var deadline = NewDeadline(cancellationToken);
+        return SharedDevice.RunExclusiveAsync(deadline, (h, ct, a) => a
+            ? h.ControlTransferAsync(requestType, request, value, index, buffer, ToUsbTimeout(deadline), ct)
+            : new(h.ControlTransfer(requestType, request, value, index, buffer, ToUsbTimeout(deadline))), async);
     }
 
     private protected override void RegisterAttributes(AttributeTable table)

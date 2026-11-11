@@ -62,7 +62,7 @@ public sealed class UsbTmcDeviceTests
     {
         var (tmc, device, instrument) = Open();
         using var disposeTmc = tmc;
-        Assert.Throws<VisaTimeoutException>(() => tmc.Read(new byte[64], 200));
+        Assert.Throws<UsbTimeoutException>(() => tmc.Read(new byte[64], 200));
         Assert.Equal(1, device.AbortCount);
 
         using var cts = new CancellationTokenSource(200);
@@ -81,7 +81,7 @@ public sealed class UsbTmcDeviceTests
         tmc.Clear(2000);
         await tmc.ClearAsync(2000);
         Assert.Equal(2, device.ClearCount);
-        Assert.Throws<VisaTimeoutException>(() => tmc.ReadMessage(300));
+        Assert.Throws<UsbTimeoutException>(() => tmc.ReadMessage(300));
         Assert.Equal(instrument.Identity + "\n", Text(tmc.Query("*IDN?\n"u8, 2000)));
     }
 
@@ -144,8 +144,8 @@ public sealed class UsbTmcDeviceTests
         var (tmc, _, instrument) = Open(usb488: false);
         using var disposeTmc = tmc;
         Assert.False(tmc.IsUsb488);
-        Assert.Equal(VisaStatus.ErrorOperationNotSupported, Assert.Throws<VisaException>(() => tmc.ReadStatusByte(1000)).Status);
-        Assert.Equal(VisaStatus.ErrorOperationNotSupported, Assert.Throws<VisaException>(() => tmc.Trigger(1000)).Status);
+        Assert.Equal(UsbError.NotSupported, Assert.Throws<UsbException>(() => tmc.ReadStatusByte(1000)).Error);
+        Assert.Equal(UsbError.NotSupported, Assert.Throws<UsbException>(() => tmc.Trigger(1000)).Error);
         Assert.Equal(instrument.Identity + "\n", Text(tmc.Query("*IDN?\n"u8, 2000)));
     }
 
@@ -180,11 +180,120 @@ public sealed class UsbTmcDeviceTests
     {
         var (tmc, _, _) = Open();
         using var disposeTmc = tmc;
-        var reader = Task.Run(() => Assert.Throws<VisaTimeoutException>(() => tmc.Read(new byte[16], 1500)));
+        var reader = Task.Run(() => Assert.Throws<UsbTimeoutException>(() => tmc.Read(new byte[16], 1500)));
         await Task.Delay(200);
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        Assert.Throws<VisaTimeoutException>(() => tmc.Query("*IDN?\n"u8, 200));
+        Assert.Throws<UsbTimeoutException>(() => tmc.Query("*IDN?\n"u8, 200));
         Assert.True(watch.ElapsedMilliseconds < 1200);
         await reader;
+    }
+
+    [Fact]
+    public async Task ZeroTimeoutDoesNotWait()
+    {
+        var (tmc, _, instrument) = Open();
+        using var disposeTmc = tmc;
+
+        // Nothing to read: fails at once.
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Throws<UsbTimeoutException>(() => tmc.Read(new byte[64], 0));
+        await Assert.ThrowsAsync<UsbTimeoutException>(async () => await tmc.ReadAsync(new byte[64], 0));
+        Assert.True(watch.ElapsedMilliseconds < 1000, $"Reads with timeout 0 took {watch.ElapsedMilliseconds} ms.");
+
+        // What can complete at once does: the simulated device takes bulk-OUT at once, and answers a read at once
+        // when the response is ready.
+        tmc.Write("*IDN?\n"u8, end: true, 0);
+        await Task.Delay(200); // the simulated instrument answers in the background
+        var buffer = new byte[256];
+        var result = tmc.Read(buffer, 0);
+        Assert.True(result.End);
+        Assert.Equal(instrument.Identity + "\n", Encoding.ASCII.GetString(buffer, 0, result.Count));
+
+        // Another caller holds the device: fails at once instead of waiting for it.
+        var reader = Task.Run(() => Assert.Throws<UsbTimeoutException>(() => tmc.Read(new byte[16], 1500)));
+        await Task.Delay(200);
+        watch.Restart();
+        Assert.Throws<UsbTimeoutException>(() => tmc.Query("*IDN?\n"u8, 0));
+        Assert.True(watch.ElapsedMilliseconds < 500, $"Waited {watch.ElapsedMilliseconds} ms for the other caller.");
+        await reader;
+    }
+
+    [Fact]
+    public async Task ZeroTimeoutDoesNotWaitOnTheSimulatedHandle()
+    {
+        var backend = new SimulatedUsbBackend();
+        backend.Devices.Add(new SimulatedUsbTmcDevice(new SimulatedInstrument()));
+        using var handle = backend.Open(backend.EnumerateDevices()[0], 0);
+        byte bulkIn = handle.Interface.FindEndpoint(UsbTransferType.Bulk, input: true)!.Address;
+        byte interruptIn = handle.Interface.FindEndpoint(UsbTransferType.Interrupt, input: true)!.Address;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Throws<UsbTimeoutException>(() => handle.BulkTransfer(bulkIn, new byte[512], 0));
+        await Assert.ThrowsAsync<UsbTimeoutException>(async () => await handle.InterruptTransferAsync(interruptIn, new byte[8], 0));
+        Assert.True(watch.ElapsedMilliseconds < 1000);
+    }
+
+    [Fact]
+    public async Task SharesAGateAndTheInterruptEndpointWithOtherCode()
+    {
+        var backend = new SimulatedUsbBackend();
+        var instrument = new SimulatedInstrument();
+        backend.Devices.Add(new SimulatedUsbTmcDevice(instrument));
+        using var handle = backend.Open(backend.EnumerateDevices()[0], 0);
+        var gate = new SemaphoreSlim(1, 1);
+        await using var tmc = new UsbTmcDevice(handle, leaveOpen: true, gate);
+        tmc.ReadCapabilities(2000);
+
+        // While other code holds the gate, the client waits for it until its timeout.
+        gate.Wait();
+        Assert.Throws<UsbTimeoutException>(() => tmc.Query("*IDN?\n"u8, 200));
+        gate.Release();
+        Assert.Equal(instrument.Identity + "\n", Text(tmc.Query("*IDN?\n"u8, 2000)));
+
+        // Other code reads the interrupt endpoint and hands the client its status byte responses.
+        tmc.ExternalInterruptReader = true;
+        Assert.Throws<InvalidOperationException>(() => tmc.AddInterruptHandler(_ => { }));
+        using var stop = new CancellationTokenSource();
+        var others = new List<byte[]>();
+        byte interruptIn = handle.Interface.FindEndpoint(UsbTransferType.Interrupt, input: true)!.Address;
+        var loop = Task.Run(async () =>
+        {
+            var packet = new byte[8];
+            while (true)
+            {
+                int n;
+                try { n = await handle.InterruptTransferAsync(interruptIn, packet, Timeout.Infinite, stop.Token); }
+                catch (OperationCanceledException) { return; }
+                if (!tmc.ProcessInterrupt(packet.AsSpan(0, n))) lock (others) others.Add(packet[..n]);
+            }
+        });
+        tmc.ReadStatusByte(2000);
+        await tmc.ReadStatusByteAsync(2000);
+        Assert.False(tmc.ProcessInterrupt([0x81, 0x40])); // a service request is no status byte response
+        stop.Cancel();
+        await loop;
+        lock (others) Assert.Empty(others);
+    }
+
+    [Fact]
+    public async Task CapabilitiesAreReadWhole()
+    {
+        var backend = new SimulatedUsbBackend();
+        backend.Devices.Add(new SimulatedUsbTmcDevice(new SimulatedInstrument()));
+        using var handle = backend.Open(backend.EnumerateDevices()[0], 0);
+        using var tmc = new UsbTmcDevice(handle, leaveOpen: true);
+        Assert.Equal(default, tmc.Capabilities);
+        var seen = new HashSet<UsbTmcCapabilities>();
+        using var stop = new CancellationTokenSource();
+        var reader = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested) seen.Add(tmc.Capabilities);
+        });
+        var expected = tmc.ReadCapabilities(2000);
+        for (int i = 0; i < 50; i++) await tmc.ReadCapabilitiesAsync(2000);
+        stop.Cancel();
+        await reader;
+        // Only the value before the first read and the complete value read, never a mix of the two.
+        Assert.Subset(new HashSet<UsbTmcCapabilities> { default, expected }, seen);
+        Assert.Equal(expected, tmc.Capabilities);
     }
 }
