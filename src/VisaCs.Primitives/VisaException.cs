@@ -1,7 +1,7 @@
 namespace VisaCs;
 
 /// <summary>
-/// Thrown by all VisaCs libraries (the VISA sessions and the standalone Serial, USB and GPIB libraries) when an I/O
+/// Thrown by all VisaCs libraries (the VISA sessions and the standalone Serial, USB, GPIB and LAN libraries) when an I/O
 /// operation fails. <see cref="Status"/> classifies the failure with a VISA status code, and the message starts with
 /// that code's visa.h name.
 /// </summary>

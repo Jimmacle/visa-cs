@@ -13,7 +13,7 @@ public enum HislipDescriptorType : byte
     TlsLastError = 2,
 }
 
-/// <summary>A HiSLIP 2.0 descriptor, as returned by <see cref="TcpipHislipSession.GetDescriptors"/>.</summary>
+/// <summary>A HiSLIP 2.0 descriptor, as returned by <see cref="VisaCs.Lan.HislipClient.GetDescriptors"/>.</summary>
 /// <remarks>Equality compares <see cref="Content"/> by reference, not by its bytes.</remarks>
 /// <param name="Type">The descriptor type. Servers may also send types this enumeration does not name.</param>
 /// <param name="Content">The raw descriptor content.</param>

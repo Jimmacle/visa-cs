@@ -3,113 +3,32 @@ using System.Net;
 using System.Net.Sockets;
 using VisaCs.Internal;
 
-namespace VisaCs.Protocols.Rpc;
-
-/// <summary>ONC RPC v2 (RFC 5531) constants and message helpers.</summary>
-internal static class OncRpc
-{
-    public const uint RpcVersion = 2;
-    public const uint MsgCall = 0;
-    public const uint MsgReply = 1;
-    public const uint MsgAccepted = 0;
-    public const uint MsgDenied = 1;
-
-    public const uint AcceptSuccess = 0;
-    public const uint AcceptProgUnavail = 1;
-    public const uint AcceptProgMismatch = 2;
-    public const uint AcceptProcUnavail = 3;
-    public const uint AcceptGarbageArgs = 4;
-    public const uint AcceptSystemErr = 5;
-
-    public const uint AuthNone = 0;
-
-    public const uint LastFragment = 0x80000000;
-    public const int MaxRecordSize = 256 * 1024 * 1024;
-
-    public const uint PortmapperProgram = 100000;
-    public const uint PortmapperVersion = 2;
-    public const uint PortmapperProcGetPort = 3;
-    public const uint ProtocolTcp = 6;
-
-    public static void WriteCallHeader(XdrWriter w, uint xid, uint program, uint version, uint procedure)
-    {
-        w.WriteUInt32(xid);
-        w.WriteUInt32(MsgCall);
-        w.WriteUInt32(RpcVersion);
-        w.WriteUInt32(program);
-        w.WriteUInt32(version);
-        w.WriteUInt32(procedure);
-        w.WriteUInt32(AuthNone); // credentials
-        w.WriteUInt32(0);
-        w.WriteUInt32(AuthNone); // verifier
-        w.WriteUInt32(0);
-    }
-
-    public static void WriteAcceptedReplyHeader(XdrWriter w, uint xid, uint acceptStatus)
-    {
-        w.WriteUInt32(xid);
-        w.WriteUInt32(MsgReply);
-        w.WriteUInt32(MsgAccepted);
-        w.WriteUInt32(AuthNone);
-        w.WriteUInt32(0);
-        w.WriteUInt32(acceptStatus);
-    }
-
-    /// <summary>
-    /// Parses a reply. Returns null if the xid does not match (a stale reply), otherwise a reader positioned
-    /// at the procedure results. Throws on RPC-level errors.
-    /// </summary>
-    public static XdrReader? ParseReply(byte[] message, int length, uint expectedXid)
-    {
-        var r = new XdrReader(message, 0, length);
-        uint xid = r.ReadUInt32();
-        if (xid != expectedXid) return null;
-        if (r.ReadUInt32() != MsgReply)
-            throw new VisaException(VisaStatus.ErrorIO, "RPC: expected a reply message.");
-        uint replyStatus = r.ReadUInt32();
-        if (replyStatus == MsgDenied)
-        {
-            uint rejectStatus = r.ReadUInt32();
-            throw new VisaException(VisaStatus.ErrorIO,
-                rejectStatus == 0 ? "RPC call rejected: RPC version mismatch." : "RPC call rejected: authentication error.");
-        }
-        r.ReadUInt32();     // verifier flavor
-        r.ReadOpaqueSpan(); // verifier body
-        uint acceptStatus = r.ReadUInt32();
-        return acceptStatus switch
-        {
-            AcceptSuccess => r,
-            AcceptProgUnavail => throw new VisaException(VisaStatus.ErrorResourceNotFound, "RPC program unavailable."),
-            AcceptProgMismatch => throw new VisaException(VisaStatus.ErrorResourceNotFound, "RPC program version mismatch."),
-            AcceptProcUnavail => throw new VisaException(VisaStatus.ErrorOperationNotSupported, "RPC procedure unavailable."),
-            AcceptGarbageArgs => throw new VisaException(VisaStatus.ErrorInvalidParameter, "RPC server could not decode the arguments."),
-            _ => throw new VisaException(VisaStatus.ErrorIO, $"RPC system error (accept status {acceptStatus})."),
-        };
-    }
-
-    private static int _xidSeed = Environment.TickCount;
-
-    public static uint NewXidBase() => unchecked((uint)Interlocked.Add(ref _xidSeed, 0x10000));
-}
+namespace VisaCs.Lan.Rpc;
 
 /// <summary>
-/// ONC RPC client over TCP with record marking. Thread-safe: calls are serialized, and a call waits for the one in
-/// progress no longer than its own deadline. Every call takes a <c>bool async</c>: false blocks the calling thread,
-/// true holds none while waiting for the reply.
+/// ONC RPC client over TCP with record marking, for one program and version. Thread-safe: calls are serialized, and
+/// a call waits for the one in progress no longer than its own timeout.
 /// </summary>
 /// <remarks>
+/// <para>
+/// Timeouts are in milliseconds; -1 waits without limit. A timeout throws <see cref="VisaTimeoutException"/>, other
+/// failures <see cref="VisaException"/>, and cancelling the token of an asynchronous call
+/// <see cref="OperationCanceledException"/>. RPC-level rejections map to VI_ERROR_RSRC_NFOUND (program unavailable or
+/// version mismatch), VI_ERROR_NSUP_OPER (procedure unavailable), VI_ERROR_INV_PARAMETER (garbage arguments) and
+/// VI_ERROR_IO.
+/// </para>
+/// <para>
 /// A call that times out while waiting for its reply leaves the connection usable: the late reply is recognized by
 /// its xid and discarded. A call whose request was only partly sent, or a malformed record, closes the connection,
 /// because the server would otherwise read the next request as the rest of the broken one; later calls then fail
 /// with VI_ERROR_CONN_LOST.
+/// </para>
 /// </remarks>
-internal sealed class RpcTcpClient : IDisposable
+public sealed class RpcTcpClient : IDisposable
 {
     private const int ReceiveBufferSize = 4096;
 
     private readonly Socket _socket;
-    private readonly uint _program;
-    private readonly uint _version;
     private readonly XdrWriter _writer = new(1024);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private uint _xid = OncRpc.NewXidBase();
@@ -120,27 +39,68 @@ internal sealed class RpcTcpClient : IDisposable
     private RpcTcpClient(Socket socket, uint program, uint version)
     {
         _socket = socket;
-        _program = program;
-        _version = version;
+        Program = program;
+        Version = version;
     }
 
-    public static async ValueTask<RpcTcpClient> ConnectAsync(string host, int port, uint program, uint version, Deadline deadline, bool async) =>
+    /// <summary>Connects to <paramref name="host"/>:<paramref name="port"/> (IPv4 addresses first) for calls to one RPC program.</summary>
+    public static RpcTcpClient Connect(string host, int port, uint program, uint version, int timeoutMilliseconds) =>
+        AsyncIO.Complete(ConnectAsync(host, port, program, version, Deadline.FromMilliseconds(timeoutMilliseconds), async: false));
+
+    /// <summary>Connects to <paramref name="host"/>:<paramref name="port"/>; see <see cref="Connect(string, int, uint, uint, int)"/>.</summary>
+    public static ValueTask<RpcTcpClient> ConnectAsync(string host, int port, uint program, uint version, int timeoutMilliseconds,
+        CancellationToken cancellationToken = default) =>
+        LanCall.RunAsync(ConnectAsync(host, port, program, version, LanCall.DeadlineFor(timeoutMilliseconds, cancellationToken), async: true),
+            cancellationToken);
+
+    /// <summary>Connects to <paramref name="endPoint"/> for calls to one RPC program.</summary>
+    public static RpcTcpClient Connect(IPEndPoint endPoint, uint program, uint version, int timeoutMilliseconds) =>
+        AsyncIO.Complete(ConnectAsync(endPoint, program, version, Deadline.FromMilliseconds(timeoutMilliseconds), async: false));
+
+    /// <summary>Connects to <paramref name="endPoint"/>; see <see cref="Connect(IPEndPoint, uint, uint, int)"/>.</summary>
+    public static ValueTask<RpcTcpClient> ConnectAsync(IPEndPoint endPoint, uint program, uint version, int timeoutMilliseconds,
+        CancellationToken cancellationToken = default) =>
+        LanCall.RunAsync(ConnectAsync(endPoint, program, version, LanCall.DeadlineFor(timeoutMilliseconds, cancellationToken), async: true),
+            cancellationToken);
+
+    internal static async ValueTask<RpcTcpClient> ConnectAsync(string host, int port, uint program, uint version, Deadline deadline, bool async) =>
         new(await NetUtil.ConnectAsync(host, port, deadline, async).ConfigureAwait(false), program, version);
 
-    public static async ValueTask<RpcTcpClient> ConnectAsync(IPEndPoint endPoint, uint program, uint version, Deadline deadline, bool async) =>
+    internal static async ValueTask<RpcTcpClient> ConnectAsync(IPEndPoint endPoint, uint program, uint version, Deadline deadline, bool async) =>
         new(await NetUtil.ConnectAsync(endPoint, deadline, async).ConfigureAwait(false), program, version);
 
+    /// <summary>The RPC program number calls go to.</summary>
+    public uint Program { get; }
+
+    /// <summary>The program version calls go to.</summary>
+    public uint Version { get; }
+
+    /// <summary>The local end of the connection.</summary>
     public IPEndPoint LocalEndPoint => (IPEndPoint)_socket.LocalEndPoint!;
 
+    /// <summary>The server's end of the connection.</summary>
     public IPEndPoint RemoteEndPoint => (IPEndPoint)_socket.RemoteEndPoint!;
 
-    public Socket Socket => _socket;
+    internal Socket Socket => _socket;
 
     /// <summary>True while a call is in progress.</summary>
     public bool IsBusy => _gate.CurrentCount == 0;
 
+    /// <summary>
+    /// Calls <paramref name="procedure"/>: <paramref name="writeArguments"/> writes the arguments (null for none), and
+    /// the result is a reader over a private copy of the results.
+    /// </summary>
+    public XdrReader Call(uint procedure, Action<XdrWriter>? writeArguments, int timeoutMilliseconds) =>
+        AsyncIO.Complete(CallAsync(procedure, writeArguments, Deadline.FromMilliseconds(timeoutMilliseconds), async: false));
+
+    /// <summary>Calls <paramref name="procedure"/> without holding a thread; see <see cref="Call"/>.</summary>
+    public ValueTask<XdrReader> CallAsync(uint procedure, Action<XdrWriter>? writeArguments, int timeoutMilliseconds,
+        CancellationToken cancellationToken = default) =>
+        LanCall.RunAsync(CallAsync(procedure, writeArguments, LanCall.DeadlineFor(timeoutMilliseconds, cancellationToken), async: true),
+            cancellationToken);
+
     /// <summary>Performs a call and returns a reader over a private copy of the results.</summary>
-    public async ValueTask<XdrReader> CallAsync(uint procedure, Action<XdrWriter>? writeArgs, Deadline deadline, bool async)
+    internal async ValueTask<XdrReader> CallAsync(uint procedure, Action<XdrWriter>? writeArgs, Deadline deadline, bool async)
     {
         await _gate.EnterOrThrowAsync(deadline, async, "the RPC call in progress").ConfigureAwait(false);
         try
@@ -149,7 +109,7 @@ internal sealed class RpcTcpClient : IDisposable
             uint xid = unchecked(++_xid);
             _writer.Reset();
             _writer.WriteUInt32(0); // record mark placeholder
-            OncRpc.WriteCallHeader(_writer, xid, _program, _version, procedure);
+            OncRpc.WriteCallHeader(_writer, xid, Program, Version, procedure);
             writeArgs?.Invoke(_writer);
             _writer.PatchUInt32(0, OncRpc.LastFragment | (uint)(_writer.Length - 4));
             try
@@ -160,8 +120,8 @@ internal sealed class RpcTcpClient : IDisposable
             {
                 Close("a request was only partly sent");
                 if (ex is not VisaTimeoutException timeout) throw;
-                throw new VisaTimeoutException("The RPC request was only partly sent before the timeout; the connection was closed.", ex)
-                    { BytesTransferred = timeout.BytesTransferred };
+                throw LanErrors.Timeout("The RPC request was only partly sent before the timeout; the connection was closed.", ex,
+                    timeout.BytesTransferred);
             }
 
             while (true)
@@ -177,7 +137,7 @@ internal sealed class RpcTcpClient : IDisposable
         }
         catch (ObjectDisposedException ex)
         {
-            throw new VisaException(VisaStatus.ErrorConnectionLost, ClosedMessage, ex);
+            throw LanErrors.ConnectionLost(ClosedMessage, ex);
         }
         finally
         {
@@ -189,7 +149,7 @@ internal sealed class RpcTcpClient : IDisposable
 
     private void ThrowIfClosed()
     {
-        if (_closed) throw new VisaException(VisaStatus.ErrorConnectionLost, ClosedMessage);
+        if (_closed) throw LanErrors.ConnectionLost(ClosedMessage);
     }
 
     /// <summary>Closes the connection; later calls fail with VI_ERROR_CONN_LOST giving <paramref name="reason"/>.</summary>
@@ -225,7 +185,7 @@ internal sealed class RpcTcpClient : IDisposable
                 if (total > OncRpc.MaxRecordSize)
                 {
                     Close("the server sent an oversized RPC record");
-                    throw new VisaException(VisaStatus.ErrorIO, "RPC record too large; the connection was closed.");
+                    throw LanErrors.IO("RPC record too large; the connection was closed.");
                 }
                 if (_receive.Length < total)
                     Array.Resize(ref _receive, (int)Math.Max(_receive.Length * 2L, total));
@@ -248,5 +208,6 @@ internal sealed class RpcTcpClient : IDisposable
         }
     }
 
+    /// <summary>Closes the connection.</summary>
     public void Dispose() => Close(null);
 }

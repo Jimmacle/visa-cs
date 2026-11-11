@@ -4,7 +4,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using VisaCs.Internal;
 
-namespace VisaCs.Protocols.Hislip;
+namespace VisaCs.Lan.Protocols;
 
 /// <summary>
 /// TLS channel. A reader loop decrypts into a buffer (at most 4 MiB ahead of the consumer), so that reads can honor
@@ -117,10 +117,10 @@ internal sealed class TlsHislipChannel : HislipChannel
             }
             ssl.Dispose();
             if (ex is OperationCanceledException)
-                throw new VisaTimeoutException("The TLS handshake timed out.", ex);
+                throw LanErrors.Timeout("The TLS handshake timed out.", ex);
             if (serverCertificateRejected())
-                throw new VisaSecurityException(SecurityFailure.ServerCertificate, $"The server certificate was not trusted: {ex.Message}", ex);
-            throw new VisaSecurityException(SecurityFailure.TlsNegotiation, $"TLS handshake failed: {ex.Message}", ex);
+                throw LanErrors.Security(SecurityFailure.ServerCertificate, $"The server certificate was not trusted: {ex.Message}", ex);
+            throw LanErrors.Security(SecurityFailure.TlsNegotiation, $"TLS handshake failed: {ex.Message}", ex);
         }
     }
 
@@ -195,14 +195,14 @@ internal sealed class TlsHislipChannel : HislipChannel
                     _changed.Pulse();
                     return n;
                 }
-                if (_disposed) throw new VisaException(VisaStatus.ErrorConnectionLost, "The TLS connection was closed.");
+                if (_disposed) throw LanErrors.ConnectionLost("The TLS connection was closed.");
                 if (_fault is not null)
-                    throw new VisaException(VisaStatus.ErrorConnectionLost, $"The TLS connection failed: {_fault.Message}", _fault);
-                if (_eof) throw new VisaException(VisaStatus.ErrorConnectionLost, "The TLS session was closed by the peer.");
+                    throw LanErrors.ConnectionLost($"The TLS connection failed: {_fault.Message}", _fault);
+                if (_eof) throw LanErrors.ConnectionLost("The TLS session was closed by the peer.");
                 next = _changed.Next;
             }
             if (!await ChangeSignal.WaitAsync(next, deadline, async).ConfigureAwait(false))
-                throw new VisaTimeoutException();
+                throw LanErrors.Timeout();
         }
     }
 
@@ -214,9 +214,9 @@ internal sealed class TlsHislipChannel : HislipChannel
             lock (_sync)
             {
                 if (_fault is not null)
-                    throw new VisaException(VisaStatus.ErrorConnectionLost, $"The TLS connection failed: {_fault.Message}", _fault);
+                    throw LanErrors.ConnectionLost($"The TLS connection failed: {_fault.Message}", _fault);
             }
-            if (deadline.HasExpired) throw new VisaTimeoutException("TLS write timed out.");
+            if (deadline.HasExpired) throw LanErrors.Timeout("TLS write timed out.");
             using var cts = deadline.CreateTokenSource();
             Task? write = null;
             try
@@ -238,8 +238,8 @@ internal sealed class TlsHislipChannel : HislipChannel
                     _changed.Pulse();
                 }
                 if (ex is OperationCanceledException)
-                    throw new VisaTimeoutException("TLS write timed out; the connection can no longer be used.", ex);
-                throw new VisaException(VisaStatus.ErrorConnectionLost, $"TLS write failed: {ex.Message}", ex);
+                    throw LanErrors.Timeout("TLS write timed out; the connection can no longer be used.", ex);
+                throw LanErrors.ConnectionLost($"TLS write failed: {ex.Message}", ex);
             }
         }
         finally
@@ -259,7 +259,7 @@ internal sealed class TlsHislipChannel : HislipChannel
         {
             // The peer's close_notify may be arriving right now: keep the reader from decrypting it during the shutdown.
             if (!await _records.EnterSessionAsync(deadline, async).ConfigureAwait(false))
-                throw new VisaTimeoutException("Sending TLS close_notify timed out.");
+                throw LanErrors.Timeout("Sending TLS close_notify timed out.");
             bool done;
             try
             {
@@ -286,13 +286,13 @@ internal sealed class TlsHislipChannel : HislipChannel
             catch (Exception ex) when (ex is not VisaException)
             {
                 var inner = (ex as AggregateException)?.InnerException ?? ex;
-                throw new VisaException(VisaStatus.ErrorConnectionLost, $"Ending TLS failed: {inner.Message}", inner);
+                throw LanErrors.ConnectionLost($"Ending TLS failed: {inner.Message}", inner);
             }
             finally
             {
                 _records.ExitSession();
             }
-            if (!done) throw new VisaTimeoutException("Sending TLS close_notify timed out.");
+            if (!done) throw LanErrors.Timeout("Sending TLS close_notify timed out.");
         }
         finally
         {
@@ -306,15 +306,15 @@ internal sealed class TlsHislipChannel : HislipChannel
             {
                 if (_eof)
                 {
-                    if (_buffered > 0) throw new VisaException(VisaStatus.ErrorIO, "Data was pending when TLS ended.");
+                    if (_buffered > 0) throw LanErrors.IO("Data was pending when TLS ended.");
                     break;
                 }
                 if (_fault is not null)
-                    throw new VisaException(VisaStatus.ErrorConnectionLost, $"The TLS connection failed while ending encryption: {_fault.Message}", _fault);
+                    throw LanErrors.ConnectionLost($"The TLS connection failed while ending encryption: {_fault.Message}", _fault);
                 next = _changed.Next;
             }
             if (!await ChangeSignal.WaitAsync(next, deadline, async).ConfigureAwait(false))
-                throw new VisaTimeoutException("The peer did not answer close_notify.");
+                throw LanErrors.Timeout("The peer did not answer close_notify.");
         }
 
         if (async) await _reader.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);

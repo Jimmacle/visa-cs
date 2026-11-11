@@ -2,7 +2,7 @@ using System.Buffers;
 using System.Net.Sockets;
 using VisaCs.Internal;
 
-namespace VisaCs.Protocols.Hislip;
+namespace VisaCs.Lan.Protocols;
 
 /// <summary>
 /// One HiSLIP TCP connection (synchronous or asynchronous channel), either plain or TLS-encrypted.

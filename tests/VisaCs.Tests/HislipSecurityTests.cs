@@ -1,7 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using VisaCs.Protocols.Hislip;
 using VisaCs.Simulation;
 
 namespace VisaCs.Tests;
@@ -341,19 +340,5 @@ public sealed class HislipSecurityTests(HislipSecurityFixture fixture) : IClassF
         var versions = Assert.Single(descriptors, d => d.Type == HislipDescriptorType.SupportedTlsVersions);
         Assert.Equal(new byte[] { 0x03, 0x03, 0x03, 0x04 }, versions.Content);
         Assert.Equal(setup.Server.TlsInformation, Assert.Single(descriptors, d => d.Type == HislipDescriptorType.TlsInformation).Text);
-    }
-
-    [Fact]
-    public void ScramMatchesRfc7677TestVector()
-    {
-        // RFC 7677 section 3: user "user", password "pencil", client nonce "rOprNGfwEbeRWgbNEkqO".
-        var client = new ScramSha256ClientMechanism("user", "pencil", null, channelBindingAvailable: false, nonce: "rOprNGfwEbeRWgbNEkqO");
-        Assert.Equal("n,,n=user,r=rOprNGfwEbeRWgbNEkqO", System.Text.Encoding.UTF8.GetString(client.InitialResponse()));
-        var final = client.Respond(System.Text.Encoding.UTF8.GetBytes(
-            "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"));
-        Assert.Equal("c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=",
-            System.Text.Encoding.UTF8.GetString(final));
-        Assert.True(client.VerifyOutcome(System.Text.Encoding.UTF8.GetBytes("v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=")));
-        Assert.False(client.VerifyOutcome(System.Text.Encoding.UTF8.GetBytes("v=AAAA")));
     }
 }

@@ -94,29 +94,6 @@ public class CoreParsingTests
         VisaFormatter.Format("A %d %*d", [1, 4, 2, 9], null, out int used);
         Assert.Equal(3, used);
     }
-
-    [Fact]
-    public void MdnsAssemblySkipsMalformedRecords()
-    {
-        var message = new MemoryStream();
-        message.Write(new byte[] { 0, 0, 0x84, 0, 0, 0, 0, 3, 0, 0, 0, 0 });
-        // A PTR to a good instance, a PTR to a bad one, and an SRV for the bad one whose data is too short.
-        WriteRecord(message, "_hislip._tcp.local", 12, w => MdnsDiscovery.WriteName(w, "bad._hislip._tcp.local"));
-        WriteRecord(message, "bad._hislip._tcp.local", 33, w => w.Write(new byte[] { 0, 0, 0x13 }));
-        WriteRecord(message, "_hislip._tcp.local", 12, w => w.Write(new byte[] { 0xC0, 0xFF }));
-        var records = MdnsDiscovery.ParseRecords(message.ToArray());
-        Assert.Equal(3, records.Count);
-        Assert.Empty(MdnsDiscovery.Assemble(["_hislip._tcp.local"], records));
-    }
-
-    private static void WriteRecord(Stream stream, string name, ushort type, Action<Stream> data)
-    {
-        MdnsDiscovery.WriteName(stream, name);
-        var body = new MemoryStream();
-        data(body);
-        stream.Write(new byte[] { (byte)(type >> 8), (byte)type, 0, 1, 0, 0, 0, 120, (byte)(body.Length >> 8), (byte)body.Length });
-        stream.Write(body.ToArray());
-    }
 }
 
 /// <summary>A USB backend owned by the test: the resource manager must not dispose it.</summary>

@@ -2,8 +2,9 @@
 
 ## Simulated instruments
 
-`VisaCs.Simulation` lets you develop and test without hardware. It contains a scriptable SCPI instrument
-and a server for every protocol VisaCs speaks.
+`VisaCs.Simulation` lets you develop and test without hardware, with VisaCs or with the `VisaCs.Lan` clients
+alone. It contains a scriptable SCPI instrument and a server for every protocol VisaCs speaks. It uses only the
+public API of `VisaCs` and `VisaCs.Lan`, like any other package that depends on them.
 
 ```csharp
 using VisaCs;
@@ -51,9 +52,11 @@ Other commands: `find <expression>`, `parse <name>`, `write`, `read`. Options: `
 
 ```
 dotnet test tests/VisaCs.Tests
+dotnet test tests/VisaCs.Lan.Tests
 ```
 
-The default run needs no hardware and no privileges. It runs every protocol end to end against the
+`VisaCs.Lan.Tests` covers the `VisaCs.Lan` clients on their own and its internal wire code. The default run of
+both needs no hardware and no privileges. It runs every protocol end to end against the
 simulators (VXI-11, HiSLIP incl. 2.0 security, socket, VICP, simulated USB, simulated GPIB), parsing, find
 expressions, formatted I/O and the PXI register logic against a fake sysfs tree (Linux). On Linux it also
 tests the termios serial code through a pseudo-terminal.

@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
-using VisaCs.Protocols.Hislip;
+using VisaCs.Lan.Protocols;
 
 namespace VisaCs.Simulation;
 

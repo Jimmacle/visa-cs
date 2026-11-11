@@ -1,8 +1,8 @@
 # VisaCs.Primitives
 
 The VISA status codes and exception types shared by the VisaCs libraries. You normally get this package
-through `VisaCs`, `VisaCs.Serial`, `VisaCs.Usb` or `VisaCs.Gpib`. Reference it directly only if a library of
-yours handles VisaCs errors without depending on those packages.
+through `VisaCs`, `VisaCs.Serial`, `VisaCs.Usb`, `VisaCs.Gpib` or `VisaCs.Lan`. Reference it directly only if a
+library of yours handles VisaCs errors without depending on those packages.
 
 ## Install
 
@@ -19,6 +19,7 @@ dotnet add package VisaCs.Primitives --version 0.1.0
 | `VisaStatusInfo` | `GetName` (`VI_ERROR_TMO`), `GetDescription`, and the `IsError()` extension |
 | `VisaException` | Every failure: `Status`, `StatusName`, and `NativeError` when an OS or driver error code is known |
 | `VisaTimeoutException` | `VI_ERROR_TMO`; `BytesTransferred` tells how much arrived before the timeout |
+| `VisaSecurityException`, `SecurityFailure` | `VI_ERROR_NPERMISSION` from a HiSLIP secure connection; `Failure` tells which step failed |
 
 Cancelling a token is not an error code: it throws `OperationCanceledException`.
 

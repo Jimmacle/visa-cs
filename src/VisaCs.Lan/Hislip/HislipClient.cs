@@ -6,18 +6,24 @@ using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using VisaCs.Internal;
+using VisaCs.Lan.Protocols;
 
-namespace VisaCs.Protocols.Hislip;
+namespace VisaCs.Lan;
 
 /// <summary>
-/// One HiSLIP session: a synchronous channel carrying data, and an asynchronous channel carrying service requests,
-/// status queries, locks, device clear, remote/local control and (HiSLIP 2.0) the TLS switch-over. Every operation
-/// takes a <c>bool async</c>: false blocks the calling thread, true holds none while waiting.
+/// A HiSLIP (IVI-6.1) client connection: a synchronous channel carrying data, and an asynchronous channel carrying
+/// service requests, status queries, locks, device clear, remote/local control and (HiSLIP 2.0) the TLS switch-over.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Synchronous-channel I/O is serialized by the owning session. Requests on the asynchronous channel are serialized
-/// by a gate that a request waits for no longer than its own deadline. A background read loop (asynchronous, holding
+/// Timeouts are in milliseconds; -1 waits without limit. A timeout throws <see cref="VisaTimeoutException"/>, other
+/// failures <see cref="VisaException"/> (<see cref="VisaSecurityException"/> for TLS and authentication), and
+/// cancelling the token of an asynchronous call <see cref="OperationCanceledException"/>.
+/// </para>
+/// <para>
+/// Data I/O (<see cref="Write"/>, <see cref="Read"/>, <see cref="Trigger"/>, <see cref="DeviceClear"/> and the
+/// encryption switch) must not overlap: use one caller at a time. Requests on the asynchronous channel may run
+/// alongside it; they are serialized by a gate that a request waits for no longer than its own timeout. A background read loop (asynchronous, holding
 /// no thread while idle) receives everything the server sends on the asynchronous channel; it pauses while
 /// StartTLS/EndTLS switch that channel, and the switch holds the gate so no other request can write into it.
 /// </para>
@@ -30,7 +36,7 @@ namespace VisaCs.Protocols.Hislip;
 /// a failed or timed-out TLS switch, or failed authentication. Later calls then throw VI_ERROR_CONN_LOST.
 /// </para>
 /// </remarks>
-internal sealed partial class HislipConnection : IDisposable
+public sealed partial class HislipClient : IDisposable
 {
     /// <summary>Vendor ID this client sends in Initialize ("CS").</summary>
     private const ushort VendorId = 0x4353;
@@ -69,23 +75,49 @@ internal sealed partial class HislipConnection : IDisposable
     /// <summary>A request whose caller stopped waiting; its response is dropped when it arrives.</summary>
     private readonly record struct AbandonedRequest(HislipMessageType Response, bool LockRequest);
 
-    private HislipConnection(HislipChannel sync, HislipChannel async, string host)
+    private HislipClient(HislipChannel sync, HislipChannel async, string host)
     {
         _sync = sync;
         _async = async;
         _host = host;
     }
 
+    /// <summary>The session ID the server assigned.</summary>
     public ushort SessionId { get; private set; }
 
-    /// <summary>The protocol version both sides use: the lower of the server's and <see cref="Hislip.ProtocolVersion"/>.</summary>
-    public ushort NegotiatedProtocolVersion { get; private set; }
+    /// <summary>The protocol version both sides use, e.g. 0x0200 for 2.0: the lower of the server's and this client's (2.0).</summary>
+    public ushort ProtocolVersion { get; private set; }
 
+    /// <summary>The server's two-character vendor ID, as a 16-bit number (first character in the high byte).</summary>
     public ushort ServerVendorId { get; private set; }
+
+    /// <summary>True in overlapped mode, false in synchronized mode. A device clear may change it (<see cref="DeviceClear"/>).</summary>
     public bool OverlapMode { get; private set; }
-    public ulong ServerMaxMessageSize { get; private set; } = ulong.MaxValue;
-    public Socket SyncSocket => _sync.Socket;
-    public Socket AsyncSocket => _async.Socket;
+
+    /// <summary>
+    /// Largest message the server accepts, in bytes (from its AsyncMaximumMessageSizeResponse); <see cref="ulong.MaxValue"/>
+    /// if the server did not answer. Writes are split into Data messages that fit (at most 64 MiB each).
+    /// </summary>
+    public ulong ServerMaximumMessageSize { get; private set; } = ulong.MaxValue;
+
+    /// <summary>The server's IP address (IPv4-mapped addresses as IPv4).</summary>
+    public IPAddress RemoteAddress => NetUtil.Normalize(((IPEndPoint)_sync.Socket.RemoteEndPoint!).Address);
+
+    /// <summary>TCP keep-alive on both channels. Default false.</summary>
+    public bool KeepAlive
+    {
+        get => NetUtil.GetKeepAlive(_sync.Socket);
+        set
+        {
+            NetUtil.SetKeepAlive(_sync.Socket, value);
+            NetUtil.SetKeepAlive(_async.Socket, value);
+        }
+    }
+
+    /// <summary>
+    /// True once the connection has closed itself (a message only partly sent, a fatal error, a failed TLS switch or
+    /// authentication) or was disposed; calls then throw VI_ERROR_CONN_LOST.
+    /// </summary>
     public bool IsClosed => _closed;
 
     /// <summary>HiSLIP 2.0: the server supports secure connections (AsyncInitializeResponse capability bit 0).</summary>
@@ -100,30 +132,42 @@ internal sealed partial class HislipConnection : IDisposable
     /// </summary>
     public bool InitialEncryptionRequired { get; private set; }
 
+    /// <summary>Whether the connection is encrypted (HiSLIP 2.0).</summary>
     public bool IsEncrypted => _sync.IsEncrypted;
 
     /// <summary>The SASL mechanism the client authenticated with, if any.</summary>
     public string? SaslMechanism { get; private set; }
 
+    /// <summary>The server's X.509 certificate; null when not encrypted. Owned by the client: do not dispose it.</summary>
     public X509Certificate2? ServerCertificate { get; private set; }
 
+    /// <summary>The negotiated TLS cipher suite; null when not encrypted.</summary>
     public TlsCipherSuite? CipherSuite { get; private set; }
 
+    /// <summary>The negotiated TLS protocol version; null when not encrypted.</summary>
     public SslProtocols? TlsProtocol { get; private set; }
 
-    /// <summary>Raised by the async-channel read loop when the server sends AsyncServiceRequest. Argument is the status byte.</summary>
+    /// <summary>
+    /// Raised when the server sends AsyncServiceRequest; the argument is the status byte. Raised on a thread-pool thread;
+    /// keep handlers short.
+    /// </summary>
     public event Action<byte>? ServiceRequest;
 
-    /// <summary>Set after the RMT (response message terminator) of a response was delivered to the application.</summary>
-    public void NotifyRmtDelivered() => _rmtDelivered = true;
+    /// <summary>
+    /// Tells the client that the application has consumed a complete response (up to END). The next message then carries
+    /// the RMT-delivered flag, as HiSLIP requires; call it after each complete response.
+    /// </summary>
+    public void MarkResponseDelivered() => _rmtDelivered = true;
 
     /// <summary>
     /// Opens both channels, applies <paramref name="security"/> and negotiates the maximum message size.
     /// <paramref name="deadline"/> covers all of it, including the TLS handshakes and authentication.
     /// </summary>
-    public static async ValueTask<HislipConnection> ConnectAsync(string host, int port, string subAddress, Deadline deadline,
+    private static async ValueTask<HislipClient> ConnectAsync(string host, int port, string subAddress, Deadline deadline,
         ulong clientMaxMessageSize, HislipSecurityOptions? security, bool async)
     {
+        ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(subAddress);
         security ??= new HislipSecurityOptions();
         HislipChannel? sync = null, asyncChannel = null;
         try
@@ -133,10 +177,10 @@ internal sealed partial class HislipConnection : IDisposable
                 Encoding.ASCII.GetBytes(subAddress), deadline, async).ConfigureAwait(false);
             var response = await Hislip.ReceiveAsync(sync, deadline, async).ConfigureAwait(false);
             if (response.Type == HislipMessageType.FatalError)
-                throw new VisaException(VisaStatus.ErrorResourceNotFound,
+                throw LanErrors.NotFound(
                     $"HiSLIP server refused the connection: {Hislip.DescribeFatalError(response.Control)} {response.PayloadText}".Trim());
             if (response.Type != HislipMessageType.InitializeResponse)
-                throw new VisaException(VisaStatus.ErrorIO, $"HiSLIP protocol error: expected InitializeResponse, got {response.Type}.");
+                throw LanErrors.IO($"HiSLIP protocol error: expected InitializeResponse, got {response.Type}.");
 
             ushort negotiated = (ushort)(response.Parameter >> 16);
             ushort sessionId = (ushort)(response.Parameter & 0xFFFF);
@@ -148,16 +192,16 @@ internal sealed partial class HislipConnection : IDisposable
                 .ConfigureAwait(false);
             var asyncResponse = await Hislip.ReceiveAsync(asyncChannel, deadline, async).ConfigureAwait(false);
             if (asyncResponse.Type == HislipMessageType.FatalError)
-                throw new VisaException(VisaStatus.ErrorResourceNotFound,
+                throw LanErrors.NotFound(
                     $"HiSLIP server refused the async channel: {Hislip.DescribeFatalError(asyncResponse.Control)} {asyncResponse.PayloadText}".Trim());
             if (asyncResponse.Type != HislipMessageType.AsyncInitializeResponse)
-                throw new VisaException(VisaStatus.ErrorIO, $"HiSLIP protocol error: expected AsyncInitializeResponse, got {asyncResponse.Type}.");
+                throw LanErrors.IO($"HiSLIP protocol error: expected AsyncInitializeResponse, got {asyncResponse.Type}.");
 
-            var connection = new HislipConnection(sync, asyncChannel, host)
+            var connection = new HislipClient(sync, asyncChannel, host)
             {
                 SessionId = sessionId,
                 OverlapMode = (response.Control & 1) != 0,
-                NegotiatedProtocolVersion = negotiated,
+                ProtocolVersion = negotiated,
                 ServerVendorId = (ushort)(asyncResponse.Parameter & 0xFFFF),
                 EncryptionMandatory = v2 && (response.Control & 2) != 0,
                 InitialEncryptionRequired = v2 && (response.Control & 6) != 0,
@@ -190,7 +234,7 @@ internal sealed partial class HislipConnection : IDisposable
     {
         try
         {
-            await SetClientMaximumMessageSizeAsync(size, deadline, async).ConfigureAwait(false);
+            await SetMaximumMessageSizeCoreAsync(size, deadline, async).ConfigureAwait(false);
         }
         catch (VisaException ex) when (!_closed && !deadline.IsCanceled && (ex.Status == VisaStatus.ErrorIO || ex is VisaTimeoutException))
         {
@@ -200,13 +244,13 @@ internal sealed partial class HislipConnection : IDisposable
     }
 
     /// <summary>Announces the largest message this client accepts and records the server's limit from the reply.</summary>
-    public async ValueTask SetClientMaximumMessageSizeAsync(ulong size, Deadline deadline, bool async)
+    private async ValueTask SetMaximumMessageSizeCoreAsync(ulong size, Deadline deadline, bool async)
     {
         var payload = new byte[8];
         BinaryPrimitives.WriteUInt64BigEndian(payload, size);
         var reply = await AsyncRequestAsync(HislipMessageType.AsyncMaximumMessageSize, 0, 0, payload,
             HislipMessageType.AsyncMaximumMessageSizeResponse, deadline, async).ConfigureAwait(false);
-        if (reply.Payload.Length >= 8) ServerMaxMessageSize = BinaryPrimitives.ReadUInt64BigEndian(reply.Payload);
+        if (reply.Payload.Length >= 8) ServerMaximumMessageSize = BinaryPrimitives.ReadUInt64BigEndian(reply.Payload);
     }
 
     // ------------------------------------------------------------------ closing
@@ -214,7 +258,7 @@ internal sealed partial class HislipConnection : IDisposable
     private void ThrowIfClosed()
     {
         if (_closed)
-            throw new VisaException(VisaStatus.ErrorConnectionLost,
+            throw LanErrors.ConnectionLost(
                 _closeReason is { } reason ? $"The HiSLIP connection was closed: {reason}." : "The HiSLIP connection is closed.");
     }
 
@@ -248,12 +292,13 @@ internal sealed partial class HislipConnection : IDisposable
         {
             Fail($"a {type} message was only partly sent");
             if (ex is VisaTimeoutException timeout)
-                throw new VisaTimeoutException("The send timed out after part of a HiSLIP message was sent; the connection was closed.", ex)
-                    { BytesTransferred = timeout.BytesTransferred };
+                throw LanErrors.Timeout("The send timed out after part of a HiSLIP message was sent; the connection was closed.", ex,
+                    timeout.BytesTransferred);
             throw;
         }
     }
 
+    /// <summary>Closes both channels (the server then releases this client's locks).</summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, true)) return;
@@ -359,7 +404,7 @@ internal sealed partial class HislipConnection : IDisposable
     }
 
     /// <summary>Sends a request on the async channel and waits for the matching response type.</summary>
-    public async ValueTask<HislipMessage> AsyncRequestAsync(HislipMessageType type, byte control, uint parameter, ReadOnlyMemory<byte> payload,
+    private async ValueTask<HislipMessage> AsyncRequestAsync(HislipMessageType type, byte control, uint parameter, ReadOnlyMemory<byte> payload,
         HislipMessageType expected, Deadline deadline, bool async)
     {
         await EnterAsyncChannelAsync(deadline, async).ConfigureAwait(false);
@@ -418,7 +463,7 @@ internal sealed partial class HislipConnection : IDisposable
                         _abandoned.Enqueue(new AbandonedRequest(expected, LockRequest: request == HislipMessageType.AsyncLock && control == 1));
                     }
                     ThrowIfClosed();
-                    throw new VisaTimeoutException($"No HiSLIP {expected} received.");
+                    throw LanErrors.Timeout($"No HiSLIP {expected} received.");
                 }
                 if (message.Type == expected) return message;
                 if (message.Type == HislipMessageType.Error) throw Hislip.ErrorException(message, $"in response to {request}");
@@ -466,7 +511,7 @@ internal sealed partial class HislipConnection : IDisposable
     // ------------------------------------------------------------------ data transfer
 
     /// <summary>Writes data as Data/DataEND messages, honoring the server's maximum message size.</summary>
-    public async ValueTask WriteAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
+    private async ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
     {
         ThrowIfClosed();
         if (data.IsEmpty && !end) return;
@@ -474,7 +519,7 @@ internal sealed partial class HislipConnection : IDisposable
         // In synchronized mode a new message makes any unread response stale.
         if (!OverlapMode && _payloadRemaining > 0) _payloadDiscard = true;
 
-        ulong maxMessage = ServerMaxMessageSize;
+        ulong maxMessage = ServerMaximumMessageSize;
         long maxPayload = maxMessage <= Hislip.HeaderSize ? 1024 : (long)Math.Min(maxMessage - Hislip.HeaderSize, 64UL * 1024 * 1024);
         int offset = 0;
         do
@@ -487,7 +532,7 @@ internal sealed partial class HislipConnection : IDisposable
         } while (offset < data.Length);
     }
 
-    public ValueTask TriggerAsync(Deadline deadline, bool async)
+    private ValueTask TriggerCoreAsync(Deadline deadline, bool async)
     {
         ThrowIfClosed();
         if (!OverlapMode && _payloadRemaining > 0) _payloadDiscard = true;
@@ -516,8 +561,8 @@ internal sealed partial class HislipConnection : IDisposable
         return new HislipMessage(h, await Hislip.ReceivePayloadAsync(_sync, h, deadline, async).ConfigureAwait(false));
     }
 
-    /// <summary>Input source for <see cref="InputBuffer"/>: returns payload bytes of Data/DataEND messages.</summary>
-    public async ValueTask<FillResult> FillAsync(Memory<byte> target, Deadline deadline, bool async)
+    /// <summary>Returns payload bytes of Data/DataEND messages.</summary>
+    private async ValueTask<LanReadResult> ReadCoreAsync(Memory<byte> target, Deadline deadline, bool async)
     {
         while (true)
         {
@@ -530,7 +575,7 @@ internal sealed partial class HislipConnection : IDisposable
                     case HislipMessageType.Data:
                     case HislipMessageType.DataEnd:
                         if (h.PayloadLength > long.MaxValue)
-                            throw new VisaException(VisaStatus.ErrorIO, "HiSLIP protocol error: invalid payload length.");
+                            throw LanErrors.IO("HiSLIP protocol error: invalid payload length.");
                         _payloadRemaining = (long)h.PayloadLength;
                         _payloadIsEnd = h.Type == HislipMessageType.DataEnd;
                         _payloadMessageId = h.Parameter;
@@ -539,7 +584,7 @@ internal sealed partial class HislipConnection : IDisposable
                         {
                             if (_payloadDiscard) continue;
                             MessageDelivered();
-                            if (_payloadIsEnd) return new FillResult(0, true);
+                            if (_payloadIsEnd) return new LanReadResult(0, true);
                             continue;
                         }
                         break;
@@ -576,7 +621,7 @@ internal sealed partial class HislipConnection : IDisposable
             _payloadRemaining -= received;
             bool end = _payloadRemaining == 0 && _payloadIsEnd;
             if (_payloadRemaining == 0) MessageDelivered();
-            return new FillResult(received, end);
+            return new LanReadResult(received, end);
         }
     }
 
@@ -584,7 +629,7 @@ internal sealed partial class HislipConnection : IDisposable
 
     // ------------------------------------------------------------------ device operations
 
-    public async ValueTask<byte> ReadStatusByteAsync(Deadline deadline, bool async)
+    private async ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async)
     {
         var reply = await AsyncRequestAsync(HislipMessageType.AsyncStatusQuery, TakeRmt(), StatusQueryMessageId, ReadOnlyMemory<byte>.Empty,
             HislipMessageType.AsyncStatusResponse, deadline, async).ConfigureAwait(false);
@@ -592,7 +637,7 @@ internal sealed partial class HislipConnection : IDisposable
     }
 
     /// <summary>Performs the HiSLIP device clear transaction. Optionally requests a new overlap mode.</summary>
-    public async ValueTask DeviceClearAsync(bool? requestOverlap, Deadline deadline, bool async)
+    private async ValueTask DeviceClearCoreAsync(bool? requestOverlap, Deadline deadline, bool async)
     {
         var ack = await AsyncRequestAsync(HislipMessageType.AsyncDeviceClear, 0, 0, ReadOnlyMemory<byte>.Empty,
             HislipMessageType.AsyncDeviceClearAcknowledge, deadline, async).ConfigureAwait(false);
@@ -619,7 +664,7 @@ internal sealed partial class HislipConnection : IDisposable
             if (h.Type == HislipMessageType.DeviceClearAcknowledge)
             {
                 OverlapMode = (h.Control & 1) != 0;
-                if (NegotiatedProtocolVersion >= Hislip.ProtocolVersion20)
+                if (ProtocolVersion >= Hislip.ProtocolVersion20)
                 {
                     EncryptionMandatory = (h.Control & 2) != 0;
                     InitialEncryptionRequired = (h.Control & 6) != 0;
@@ -633,7 +678,7 @@ internal sealed partial class HislipConnection : IDisposable
         _payloadIsEnd = false;
     }
 
-    public async ValueTask RemoteLocalAsync(RemoteLocalMode mode, Deadline deadline, bool async)
+    private async ValueTask RemoteLocalCoreAsync(HislipRemoteLocalMode mode, Deadline deadline, bool async)
     {
         await AsyncRequestAsync(HislipMessageType.AsyncRemoteLocalControl, (byte)mode, MostRecentMessageId, ReadOnlyMemory<byte>.Empty,
             HislipMessageType.AsyncRemoteLocalResponse, deadline, async).ConfigureAwait(false);
@@ -644,7 +689,7 @@ internal sealed partial class HislipConnection : IDisposable
     /// <paramref name="timeoutMs"/> negative waits without limit; otherwise the server waits for the time
     /// <paramref name="deadline"/> has left (the caller may have spent part of its timeout already).
     /// </summary>
-    public async ValueTask LockAsync(string lockString, int timeoutMs, Deadline deadline, bool async)
+    private async ValueTask LockCoreAsync(string lockString, int timeoutMs, Deadline deadline, bool async)
     {
         uint serverTimeout = timeoutMs < 0 ? uint.MaxValue : (uint)deadline.RemainingMilliseconds;
         var reply = await AsyncRequestAsync(HislipMessageType.AsyncLock, 1, serverTimeout, Encoding.ASCII.GetBytes(lockString),
@@ -654,31 +699,31 @@ internal sealed partial class HislipConnection : IDisposable
             case 1:
                 return;
             case 0:
-                throw new VisaTimeoutException("The HiSLIP lock could not be acquired before the timeout (resource is locked).");
+                throw LanErrors.Timeout("The HiSLIP lock could not be acquired before the timeout (resource is locked).");
             default:
-                throw new VisaException(VisaStatus.ErrorResourceLocked, "The HiSLIP server rejected the lock request.");
+                throw LanErrors.Locked("The HiSLIP server rejected the lock request.");
         }
     }
 
-    public async ValueTask UnlockAsync(Deadline deadline, bool async)
+    private async ValueTask UnlockCoreAsync(Deadline deadline, bool async)
     {
         var reply = await AsyncRequestAsync(HislipMessageType.AsyncLock, 0, MostRecentMessageId, ReadOnlyMemory<byte>.Empty,
             HislipMessageType.AsyncLockResponse, deadline, async).ConfigureAwait(false);
         if (reply.Control == 3)
-            throw new VisaException(VisaStatus.ErrorSessionNotLocked, "The HiSLIP server reports no lock held by this session.");
+            throw LanErrors.NotLocked("The HiSLIP server reports no lock held by this session.");
     }
 
-    public async ValueTask<(bool ExclusiveGranted, uint LockCount)> LockInfoAsync(Deadline deadline, bool async)
+    private async ValueTask<HislipLockInfo> LockInfoCoreAsync(Deadline deadline, bool async)
     {
         var reply = await AsyncRequestAsync(HislipMessageType.AsyncLockInfo, 0, 0, ReadOnlyMemory<byte>.Empty,
             HislipMessageType.AsyncLockInfoResponse, deadline, async).ConfigureAwait(false);
-        return (reply.Control == 1, reply.Parameter);
+        return new HislipLockInfo(reply.Control == 1, (int)Math.Min(reply.Parameter, int.MaxValue));
     }
 
-    public async ValueTask<IReadOnlyList<HislipDescriptor>> GetDescriptorsAsync(Deadline deadline, bool async)
+    private async ValueTask<IReadOnlyList<HislipDescriptor>> GetDescriptorsCoreAsync(Deadline deadline, bool async)
     {
-        if (NegotiatedProtocolVersion < Hislip.ProtocolVersion20)
-            throw VisaException.NotSupported("GetDescriptors (needs HiSLIP 2.0)");
+        if (ProtocolVersion < Hislip.ProtocolVersion20)
+            throw LanErrors.NotSupported("GetDescriptors needs HiSLIP 2.0.");
         var reply = await AsyncRequestAsync(HislipMessageType.GetDescriptors, 0, 0, ReadOnlyMemory<byte>.Empty,
             HislipMessageType.GetDescriptorsResponse, deadline, async).ConfigureAwait(false);
         return Hislip.ParseDescriptors(reply.Payload);

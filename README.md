@@ -63,11 +63,12 @@ dotnet add package VisaCs --version 0.1.0
 
 | You want | Package |
 |---|---|
-| VISA: resource manager, sessions, every interface | `VisaCs` (brings in the four component libraries) |
+| VISA: resource manager, sessions, every interface | `VisaCs` (brings in the component libraries) |
 | Only a serial port, without VISA | `VisaCs.Serial` |
 | Only USB host access (WinUSB, usbfs, libusb), without VISA | `VisaCs.Usb` |
 | Only an NI-488.2 (GPIB) binding, without VISA | `VisaCs.Gpib` |
-| Simulated instruments in test projects | `VisaCs.Simulation`, same version as `VisaCs` |
+| Only VXI-11, HiSLIP, VICP, ONC RPC or LAN discovery, without VISA | `VisaCs.Lan` |
+| Simulated instruments in test projects | `VisaCs.Simulation` |
 
 ## Libraries
 
@@ -75,14 +76,15 @@ The hardware access layers are separate libraries, so they can be used without t
 
 | Library | Contents | Depends on |
 |---|---|---|
-| `VisaCs` | VISA itself: `ResourceManager`, sessions, resource names, VXI-11, HiSLIP, raw socket, VICP, USBTMC, PXI, formatted I/O, discovery | the four below |
+| `VisaCs` | VISA itself: `ResourceManager`, sessions (VXI-11, HiSLIP, raw socket, VICP, USBTMC, serial, GPIB, PXI), resource names, formatted I/O, find expressions | the libraries below |
 | `VisaCs.Serial` | `NativeSerialPort`: serial ports through the Win32 comm API or termios, without `System.IO.Ports` ([usage](docs/serial.md#without-visa)) | `VisaCs.Primitives` |
 | `VisaCs.Usb` | `IUsbBackend` and its WinUSB, usbfs and libusb implementations: enumeration and control, bulk and interrupt transfers ([usage](docs/usb.md#without-visa)) | `VisaCs.Primitives` |
 | `VisaCs.Gpib` | `Ni488Driver`: GPIB through any NI-488.2 compatible library, bound at run time ([usage](docs/gpib.md#without-visa)) | `VisaCs.Primitives` |
+| `VisaCs.Lan` | `Vxi11Client`, `HislipClient` (incl. TLS and SASL), `VicpClient`, ONC RPC and XDR, mDNS and VXI-11 discovery ([usage](docs/tcpip.md#without-visa)) | `VisaCs.Primitives` |
 | `VisaCs.Primitives` | `VisaStatus` and the `VisaException` types the other libraries report errors with | |
-| `VisaCs.Simulation` | Simulated instruments and protocol servers for testing without hardware | `VisaCs` |
+| `VisaCs.Simulation` | Simulated instruments and protocol servers for testing without hardware | `VisaCs`, `VisaCs.Lan` |
 
-Referencing `VisaCs` brings in the others.
+Referencing `VisaCs` brings in the component libraries and `VisaCs.Primitives`.
 
 ## Documentation
 
@@ -105,6 +107,7 @@ Every public type and member also has XML documentation, so IntelliSense shows i
 ```
 dotnet build VisaCs.slnx
 dotnet test tests/VisaCs.Tests
+dotnet test tests/VisaCs.Lan.Tests
 ```
 
 The libraries target .NET 10. The default test run needs no hardware; optional suites (real serial port, Linux
@@ -127,23 +130,24 @@ MIT, see [LICENSE](LICENSE).
 
 ```
 src/VisaCs/                 the VISA library
-  Protocols/                ONC RPC + VXI-11, HiSLIP (incl. TLS and SASL)
   Sessions/                 VisaSession, MessageBasedSession, locking, events, formatted I/O
-  Tcpip/                    VXI-11, HiSLIP (incl. security options), raw socket and VICP sessions
+  Tcpip/                    VXI-11, HiSLIP, raw socket and VICP sessions
   Usb/                      USBTMC/USB488 and USB RAW sessions
   Serial/                   SerialSession
   Gpib/                     GPIB sessions
   Pxi/                      PCI sysfs access and PxiSession
-  Discovery/                find expressions, VXI-11 broadcast, mDNS
+  Discovery/                find expressions
   Formatting/               viPrintf/viScanf format language
 src/VisaCs.Serial/          native serial ports (Win32, termios)
 src/VisaCs.Usb/             USB backends: WinUSB, usbfs, libusb
 src/VisaCs.Gpib/            NI-488.2 binding
+src/VisaCs.Lan/             ONC RPC, VXI-11, HiSLIP (incl. TLS and SASL), VICP, mDNS and VXI-11 discovery
 src/VisaCs.Primitives/      VisaStatus and the exception types
 src/Shared/                 internal helpers compiled into several libraries (deadlines, libc, library loading)
 src/VisaCs.Simulation/      simulated instrument, protocol servers, USB/IP exporter
 samples/VisaShell/          command-line tool
 tests/VisaCs.Tests/         xUnit tests
+tests/VisaCs.Lan.Tests/     xUnit tests of VisaCs.Lan on its own
 tests/Native/               stand-in NI-488.2 library for the GPIB binding tests
 tests/Interop/              PyVISA-py interoperability script
 docs/                       guides and support matrix

@@ -200,3 +200,67 @@ blocks every thread-pool thread can delay these calls until the pool adds thread
 
 Both LAN mechanisms listen for `LanDiscoveryTimeoutMilliseconds` (1000 ms). `FindResources` returns the mDNS
 instance name as the description.
+
+## Without VISA
+
+The protocols are in the `VisaCs.Lan` library and work on their own: `Vxi11Client`, `HislipClient`, `VicpClient`,
+ONC RPC (`VisaCs.Lan.Rpc`: `RpcTcpClient`, `RpcTcpServer`, `XdrWriter`, `XdrReader`, `Portmapper`) and discovery
+(`MdnsDiscovery`, `Vxi11Discovery`). The VISA sessions above are thin adapters over these clients. The library's
+types are in the `VisaCs.Lan` namespace, except `HislipSecurityOptions`, `HislipEncryptionMode` and
+`HislipDescriptor`, which stay in `VisaCs`; the exceptions (`VisaException`, `VisaTimeoutException`,
+`VisaSecurityException`) and `VisaStatus` come from `VisaCs.Primitives`.
+
+```csharp
+using System.Net;
+using System.Text;
+using VisaCs;       // VisaException, HislipSecurityOptions
+using VisaCs.Lan;
+
+// HiSLIP, encrypted when the server supports it.
+var security = new HislipSecurityOptions { Encryption = HislipEncryptionMode.Preferred };
+security.Credentials = new NetworkCredential("operator", "secret");
+using var hislip = await HislipClient.ConnectAsync("192.168.1.20", HislipClient.DefaultPort, "hislip0",
+    timeoutMilliseconds: 5000, security);
+hislip.ServiceRequest += stb => Console.WriteLine($"SRQ, status byte 0x{stb:X2}");
+await hislip.WriteAsync("*IDN?\n"u8.ToArray(), end: true, timeoutMilliseconds: 2000);
+var buffer = new byte[4096];
+int total = 0;
+while (true)
+{
+    var (count, end) = await hislip.ReadAsync(buffer.AsMemory(total), timeoutMilliseconds: 2000);
+    total += count;
+    if (end) break;
+}
+hislip.MarkResponseDelivered();   // HiSLIP's RMT-delivered flag rides on the next message
+Console.WriteLine(Encoding.ASCII.GetString(buffer, 0, total));
+
+// VXI-11: the device's own errors come back as codes.
+using var vxi11 = Vxi11Client.Connect("192.168.1.21", "inst0", timeoutMilliseconds: 5000);
+var write = vxi11.Write("*IDN?\n"u8.ToArray(), end: true, timeoutMilliseconds: 2000);
+if (write.Error != Vxi11Error.None) throw Vxi11Errors.ToException(write.Error, "device_write");
+var read = vxi11.Read(4096, terminationCharacter: (byte)'\n', timeoutMilliseconds: 2000);
+Console.WriteLine(Encoding.ASCII.GetString(read.Data.Span));
+
+// Discovery.
+foreach (var service in await MdnsDiscovery.BrowseAsync([MdnsServiceTypes.Hislip, MdnsServiceTypes.Vxi11], 1000))
+    Console.WriteLine($"{service.InstanceName}: {service.HostName}:{service.Port} {service.ServiceType}");
+foreach (IPAddress address in await Vxi11Discovery.DiscoverAsync(1000))
+    Console.WriteLine($"VXI-11 portmapper at {address}");
+```
+
+- **Timeouts.** `timeoutMilliseconds` bounds one call; -1 (`Timeout.Infinite`) waits without limit and 0 only
+  takes what has already arrived. A timeout throws `VisaTimeoutException`. VXI-11 passes the timeout to the
+  instrument as `io_timeout` and waits 2 s longer for the reply.
+- **Cancellation.** Cancelling the token of an `*Async` call throws `OperationCanceledException`, with the same
+  recovery as the VISA sessions (see [the table above](#timeouts-cancellation-and-threads)): `Vxi11Client`
+  sends `device_abort`, `HislipClient` keeps its place in the response and drops late answers.
+- **Errors.** `VisaException` with `ErrorConnectionLost` once a connection has closed itself (a message only
+  partly sent, a HiSLIP fatal error, a failed TLS switch), `ErrorResourceNotFound` when the host, port or RPC
+  program cannot be reached, `ErrorIO` for protocol errors, `VisaSecurityException` for TLS and SASL failures.
+  `Vxi11Client` returns the instrument's error code (`Vxi11Error`) instead of throwing it;
+  `Vxi11Errors.ToException` gives the exception VISA would report.
+- **Threads.** Use one caller at a time for a connection's data I/O (write, read, trigger, clear). HiSLIP
+  asynchronous-channel requests (status byte, locks, lock info, descriptors) may run alongside it.
+- **ONC RPC.** `RpcTcpClient` calls one program and version over TCP; `RpcTcpServer` serves one (VXI-11's
+  interrupt channel uses it). `OncRpc.WriteCallHeader` and `WriteAcceptedReplyHeader` build messages for other
+  transports such as UDP.

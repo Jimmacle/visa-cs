@@ -1,7 +1,7 @@
 using System.Net.Security;
 using VisaCs.Internal;
 
-namespace VisaCs.Protocols.Hislip;
+namespace VisaCs.Lan.Protocols;
 
 /// <summary>
 /// Hands TLS records to <see cref="SslStream"/> without ever reading past the end of the current record.
