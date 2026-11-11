@@ -204,7 +204,7 @@ public sealed partial class Ni488Driver
         if (cancellationToken.CanBeCanceled)
         {
             wait.Registration = cancellationToken.UnsafeRegister(static (s, token) =>
-                ((SrqWait)s!).End(AsyncIO.Canceled(new VisaTimeoutException("GPIB service request wait was canceled."), token)), wait);
+                ((SrqWait)s!).End(GpibErrors.Canceled("GPIB service request wait was canceled.", token)), wait);
         }
         lock (_pollLock)
         {

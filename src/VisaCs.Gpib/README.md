@@ -45,8 +45,10 @@ byte stb = dmm.SerialPoll(timeoutMilliseconds: 1000);
   passing control and the bus lines (`GpibLines`).
 - With NI-488.2's asynchronous calls (`ibrda`/`ibwrta` with `ibnotify`, or polled on linux-gpib) the
   asynchronous methods hold no thread; cancelling stops the transfer with `ibstop`.
-- Driver errors are `VisaException`s (from `VisaCs.Primitives`) with the matching VISA status, timeouts
-  `VisaTimeoutException`.
+- Driver errors throw `GpibException` (an `IOException`): `Error` names the failure in NI-488.2 terms
+  (`GpibError.NoListeners` for ENOL, ...) and `NativeError` holds the driver's `iberr`. Timeouts throw
+  `GpibTimeoutException` with `BytesTransferred`. A negative timeout waits without limit; 0 uses the shortest
+  NI-488.2 timeout (10 µs), and other values round up to the next NI-488.2 step (10 ms, 30 ms, ... 1000 s).
 - Implement `IGpibDriver` for another driver or a simulation.
 
 More in the [GPIB guide](https://github.com/Jimmacle/visa-cs/blob/main/docs/gpib.md#without-visa). No real GPIB

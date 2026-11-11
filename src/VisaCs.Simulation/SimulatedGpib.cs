@@ -34,20 +34,20 @@ public sealed class SimulatedGpibDriver : IGpibDriver
         ArgumentOutOfRangeException.ThrowIfNegative(primaryAddress);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(primaryAddress, 30);
         if (board != 0 || !Instruments.TryGetValue(primaryAddress, out var instrument))
-            throw new VisaException(VisaStatus.ErrorNoListeners, $"No device at GPIB{board}::{primaryAddress}.");
+            throw new GpibException(GpibError.NoListeners, $"No device at GPIB{board}::{primaryAddress}.");
         return new Device(instrument);
     }
 
     /// <inheritdoc/>
     public IGpibBoard OpenBoard(int board)
     {
-        if (board != 0) throw new VisaException(VisaStatus.ErrorResourceNotFound, $"GPIB board {board} does not exist.");
+        if (board != 0) throw new GpibException(GpibError.NoBoard, $"GPIB board {board} does not exist.");
         return new Board(this);
     }
 
     /// <summary>
     /// A simulated device. Reads and SRQ waits wait on a change signal, so the asynchronous methods hold no thread.
-    /// Cancelling their token throws <see cref="OperationCanceledException"/>; a timeout throws <see cref="VisaTimeoutException"/>.
+    /// Cancelling their token throws <see cref="OperationCanceledException"/>; a timeout throws <see cref="GpibTimeoutException"/>.
     /// After disposal every call throws <see cref="ObjectDisposedException"/>.
     /// </summary>
     private sealed class Device : IGpibDevice
@@ -185,7 +185,7 @@ public sealed class SimulatedGpibDriver : IGpibDriver
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfDisposed();
-                    throw new VisaTimeoutException("GPIB read timed out.");
+                    throw new GpibTimeoutException("GPIB read timed out.");
                 }
             }
         }
@@ -295,7 +295,7 @@ public sealed class SimulatedGpibDriver : IGpibDriver
         public void Write(ReadOnlySpan<byte> data, bool end, int timeoutMilliseconds) { }
 
         public GpibReadResult Read(Span<byte> buffer, byte? termChar, int timeoutMilliseconds) =>
-            throw new VisaTimeoutException("No data on the simulated board.");
+            throw new GpibTimeoutException("No data on the simulated board.");
 
         public ValueTask WriteAsync(ReadOnlyMemory<byte> data, bool end, int timeoutMilliseconds, CancellationToken cancellationToken = default)
         {
@@ -305,7 +305,7 @@ public sealed class SimulatedGpibDriver : IGpibDriver
 
         public ValueTask<GpibReadResult> ReadAsync(Memory<byte> buffer, byte? termChar, int timeoutMilliseconds,
             CancellationToken cancellationToken = default) =>
-            ValueTask.FromException<GpibReadResult>(new VisaTimeoutException("No data on the simulated board."));
+            ValueTask.FromException<GpibReadResult>(new GpibTimeoutException("No data on the simulated board."));
 
         public void SendCommand(ReadOnlySpan<byte> commandBytes, int timeoutMilliseconds) => driver.SentCommands.Add(commandBytes.ToArray());
 

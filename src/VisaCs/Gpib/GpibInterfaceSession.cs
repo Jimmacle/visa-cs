@@ -41,45 +41,48 @@ public sealed class GpibInterfaceSession : GpibSessionBase
     /// <summary>The board's primary address, 0 to 30 (VI_ATTR_GPIB_PRIMARY_ADDR).</summary>
     public int PrimaryAddress
     {
-        get => Board.PrimaryAddress;
-        set => Board.PrimaryAddress = value;
+        get => GpibErrorMapping.Call(() => Board.PrimaryAddress);
+        set => GpibErrorMapping.Call(() => Board.PrimaryAddress = value);
     }
 
     /// <summary>The board's secondary address, 0 to 30, or null for none (VI_ATTR_GPIB_SECONDARY_ADDR).</summary>
     public int? SecondaryAddress
     {
-        get => Board.SecondaryAddress;
-        set => Board.SecondaryAddress = value;
+        get => GpibErrorMapping.Call(() => Board.SecondaryAddress);
+        set => GpibErrorMapping.Call(() => Board.SecondaryAddress = value);
     }
 
     /// <summary>State of the ATN line (VI_ATTR_GPIB_ATN_STATE).</summary>
-    public LineState AtnState => LineFrom(Board.GetLines(), GpibLines.Atn);
+    public LineState AtnState => LineFrom(Board, GpibLines.Atn);
 
     /// <summary>State of the SRQ line (VI_ATTR_GPIB_SRQ_STATE).</summary>
-    public LineState SrqState => LineFrom(Board.GetLines(), GpibLines.Srq);
+    public LineState SrqState => LineFrom(Board, GpibLines.Srq);
 
     /// <summary>State of the REN line (VI_ATTR_GPIB_REN_STATE).</summary>
-    public LineState RenState => LineFrom(Board.GetLines(), GpibLines.Ren);
+    public LineState RenState => LineFrom(Board, GpibLines.Ren);
 
     /// <summary>State of the NDAC line (VI_ATTR_GPIB_NDAC_STATE).</summary>
-    public LineState NdacState => LineFrom(Board.GetLines(), GpibLines.Ndac);
+    public LineState NdacState => LineFrom(Board, GpibLines.Ndac);
 
     /// <summary>True if the board is controller in charge (VI_ATTR_GPIB_CIC_STATE).</summary>
-    public bool IsControllerInCharge => Board.IsControllerInCharge;
+    public bool IsControllerInCharge => GpibErrorMapping.Call(() => Board.IsControllerInCharge);
 
     /// <summary>True if the board is the system controller (VI_ATTR_GPIB_SYS_CNTRL_STATE).</summary>
-    public bool IsSystemController => Board.IsSystemController;
+    public bool IsSystemController => GpibErrorMapping.Call(() => Board.IsSystemController);
 
     /// <summary>Whether the board is addressed to talk or to listen (VI_ATTR_GPIB_ADDR_STATE).</summary>
-    public GpibAddressState AddressState => Board.AddressState;
+    public GpibAddressState AddressState => GpibErrorMapping.Call(() => Board.AddressState);
 
     private protected override ValueTask OpenCoreAsync(int connectTimeoutMs, CancellationToken cancellationToken, bool async)
     {
-        _board = Driver.OpenBoard(_name.Board);
+        _board = GpibErrorMapping.Call(() => Driver.OpenBoard(_name.Board));
         return default;
     }
 
-    private protected override void CloseDescriptors() => Interlocked.Exchange(ref _board, null)?.Dispose();
+    private protected override void CloseDescriptors()
+    {
+        if (Interlocked.Exchange(ref _board, null) is { } board) GpibErrorMapping.Call(board.Dispose);
+    }
 
     private protected override ValueTask ClearCoreAsync(Deadline deadline, bool async) =>
         GpibTimeouts.SendCommandAsync(Board, new[] { GpibCommand.DeviceClear }, deadline, async);
@@ -93,11 +96,11 @@ public sealed class GpibInterfaceSession : GpibSessionBase
         {
             case RemoteLocalMode.Deassert:
             case RemoteLocalMode.DeassertGoToLocal:
-                Board.SetRemoteEnable(false);
+                SetRemoteEnable(false);
                 break;
             case RemoteLocalMode.AssertLocalLockout:
             case RemoteLocalMode.AssertAddressLocalLockout:
-                Board.SetRemoteEnable(true);
+                SetRemoteEnable(true);
                 await GpibTimeouts.SendCommandAsync(Board, new[] { GpibCommand.LocalLockout }, deadline, async).ConfigureAwait(false);
                 break;
             case RemoteLocalMode.AddressGoToLocal:
@@ -105,7 +108,7 @@ public sealed class GpibInterfaceSession : GpibSessionBase
                 await GpibTimeouts.SendCommandAsync(Board, new[] { GpibCommand.GoToLocal }, deadline, async).ConfigureAwait(false);
                 break;
             default:
-                Board.SetRemoteEnable(true);
+                SetRemoteEnable(true);
                 break;
         }
     }
@@ -127,17 +130,28 @@ public sealed class GpibInterfaceSession : GpibSessionBase
         }, cancellationToken, async).ConfigureAwait(false);
 
     /// <summary>Pulses IFC, which makes the board controller in charge (viGpibSendIFC). A short call; there is no asynchronous form.</summary>
-    public void SendInterfaceClear() => Execute(() => Board.SendInterfaceClear());
+    public void SendInterfaceClear() => Execute(() => GpibErrorMapping.Call(Board.SendInterfaceClear));
 
     /// <summary>Controls the ATN line (viGpibControlATN). A short call; there is no asynchronous form.</summary>
-    public void ControlAtn(GpibAtnMode mode) => Execute(() => Board.ControlAtn(mode));
+    public void ControlAtn(GpibAtnMode mode) => Execute(() => GpibErrorMapping.Call(() => Board.ControlAtn(mode)));
 
     /// <summary>
     /// Passes controller-in-charge to another device (viGpibPassControl); the device must take control within the
     /// session timeout.
     /// </summary>
     public void PassControl(int primaryAddress, int? secondaryAddress = null) =>
-        Execute(() => Board.PassControl(primaryAddress, secondaryAddress, GpibTimeouts.Milliseconds(NewDeadline())));
+        Execute(() =>
+        {
+            var board = Board;
+            int timeout = GpibTimeouts.Milliseconds(NewDeadline());
+            GpibErrorMapping.Call(() => board.PassControl(primaryAddress, secondaryAddress, timeout));
+        });
+
+    private void SetRemoteEnable(bool asserted)
+    {
+        var board = Board;
+        GpibErrorMapping.Call(() => board.SetRemoteEnable(asserted));
+    }
 
     private protected override Func<CancellationToken, ValueTask<ServiceRequestEventArgs?>> CreateServiceRequestWait()
     {
@@ -147,7 +161,7 @@ public sealed class GpibInterfaceSession : GpibSessionBase
         {
             if (reportedAt != 0)
             {
-                if (await board.WaitForServiceRequestAsync(0, token).ConfigureAwait(false))
+                if (await GpibErrorMapping.CallAsync(() => board.WaitForServiceRequestAsync(0, token)).ConfigureAwait(false))
                 {
                     if (Stopwatch.GetElapsedTime(reportedAt).TotalMilliseconds < SrqRepeatMs)
                     {
@@ -159,7 +173,7 @@ public sealed class GpibInterfaceSession : GpibSessionBase
                 }
                 reportedAt = 0;
             }
-            if (!await board.WaitForServiceRequestAsync(1000, token).ConfigureAwait(false)) return null;
+            if (!await GpibErrorMapping.CallAsync(() => board.WaitForServiceRequestAsync(1000, token)).ConfigureAwait(false)) return null;
             reportedAt = Stopwatch.GetTimestamp();
             return new ServiceRequestEventArgs();
         };

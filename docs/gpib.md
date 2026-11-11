@@ -36,8 +36,9 @@ The library must export `ibdev`, `ibonl`, `ibwrt`, `ibrd`, `ibcmd`, `ibclr`, `ib
 (NI-488.2, Keysight) reports their completion, otherwise (linux-gpib, which also exports `AsyncIbsta`,
 `AsyncIberr` and `AsyncIbcnt`) one polling thread checks them.
 
-Driver errors become `VisaException`s with the matching VISA status and the driver's `iberr` code in
-`NativeError`; the message names it (for example "GPIB write failed: ENOL (no listeners on the bus)"):
+In VISA sessions, driver errors become `VisaException`s with the matching VISA status and the driver's `iberr` code
+in `NativeError`; the message names it (for example "GPIB write failed: ENOL (no listeners on the bus)"), and the
+GPIB library's exception (see [Without VISA](#without-visa)) is the `InnerException`:
 
 | `iberr` | Status |
 |---|---|
@@ -52,19 +53,22 @@ Driver errors become `VisaException`s with the matching VISA status and the driv
 | `EBUS` | `VI_ERROR_BERR` |
 | `ELCK` | `VI_ERROR_RSRC_LOCKED` |
 | `EHDL` | `VI_ERROR_INV_OBJECT` |
+| `ESRQ` | `VI_ERROR_SRQ_NOCCURRED` |
+| `EPWR` | `VI_ERROR_CONN_LOST` |
 | `EDVR` | `VI_ERROR_SYSTEM_ERROR` |
 | others | `VI_ERROR_IO` |
+
+No loadable library gives `VI_ERROR_LIBRARY_NFOUND`, and a device descriptor the driver refuses to open
+`VI_ERROR_RSRC_NFOUND`.
 
 You can also implement `IGpibDriver` yourself; `SimulatedGpibDriver` in `VisaCs.Simulation` is an example.
 
 ## Without VISA
 
-The binding is in the `VisaCs.Gpib` library and can be used directly, as a managed NI-488.2 wrapper. Its types are
-in `VisaCs.Gpib`; the exception types, `VisaStatus` and the two enums the VISA sessions share (`GpibAtnMode`,
-`GpibAddressState`) are in `VisaCs`, so import both namespaces.
+The binding is in the `VisaCs.Gpib` library and can be used directly, as a managed NI-488.2 wrapper. It depends on
+no other VisaCs library, and all its types are in `VisaCs.Gpib`.
 
 ```csharp
-using VisaCs;
 using VisaCs.Gpib;
 
 var driver = new Ni488Driver();
@@ -88,7 +92,7 @@ do
 ```
 
 `OpenDevice` does not talk to the bus, so it succeeds even when no device answers; the first write then fails with
-`VI_ERROR_NLISTENERS`. New descriptors have a 10 s timeout and send EOI with the last byte; readdressing,
+`GpibError.NoListeners` (ENOL). New descriptors have a 10 s timeout and send EOI with the last byte; readdressing,
 unaddressing and automatic serial polling keep the driver's settings (`ReaddressingEnabled` and
 `UnaddressingEnabled` change the first two). `FindListeners` needs the board to be controller in charge, asks each
 primary address with `ibln` (about 30 ms each) and does not scan secondary addresses.
@@ -97,11 +101,19 @@ primary address with `ibln` (about 30 ms each) and does not scan secondary addre
 
 - `Read` ends at a byte sent with EOI, at the termination character (`termChar`, compared in all 8 bits), or when
   the buffer is full. `GpibReadResult.End` tells whether EOI or the termination character ended it.
-- Every call takes its own timeout. `Timeout.Infinite` (-1) waits without limit; 0 asks for the shortest timeout.
-  NI-488.2 timeouts go in steps, so the driver rounds up to 10 ms, 30 ms, 100 ms, 300 ms, 1 s, 3 s, 10 s, 30 s,
-  100 s, 300 s or 1000 s (the longest).
-- A timeout throws `VisaTimeoutException`, whose `BytesTransferred` tells how much of a write was sent. A read that
-  times out after some bytes arrived returns them instead, with `End` false; the next read then times out.
+- Every call takes its own timeout (`timeoutMilliseconds`), which the driver sets with `ibtmo`. NI-488.2 timeouts
+  go in steps:
+
+  | `timeoutMilliseconds` | NI-488.2 timeout |
+  |---|---|
+  | negative (`Timeout.Infinite`) | `TNONE`: no limit |
+  | 0 | `T10us`, the shortest: the call fails unless it completes at once (NI-488.2 has no "don't wait") |
+  | 1 to 1000000 | the next step up: `T10ms`, `T30ms`, `T100ms`, `T300ms`, `T1s`, `T3s`, `T10s`, `T30s`, `T100s`, `T300s`, `T1000s` |
+  | more | `T1000s` |
+
+  The service request waits are timed by the library itself: there 0 checks once.
+- A timeout (`EABO`) throws `GpibTimeoutException`, whose `BytesTransferred` tells how much of a write was sent. A
+  read that times out after some bytes arrived returns them instead, with `End` false; the next read then times out.
 
 ### Serial poll and service requests
 
@@ -157,11 +169,43 @@ latest). Transfers also run on that thread when the library has no asynchronous 
 
 ### Threads, errors and disposal
 
+- Driver and bus errors throw `GpibException` (an `IOException`). Its `Error` names the failure, and `NativeError`
+  holds the driver's `iberr`; the message names it too (for example "GPIB write failed: ENOL (no listeners on the
+  bus)"):
+
+  | `GpibError` | `iberr` |
+  |---|---|
+  | `SystemError` | `EDVR` |
+  | `NotControllerInCharge` | `ECIC` |
+  | `NoListeners` | `ENOL` |
+  | `NotAddressed` | `EADR` |
+  | `InvalidArgument` | `EARG` |
+  | `NotSystemController` | `ESAC` |
+  | `NoBoard` | `ENEB` |
+  | `DmaError` | `EDMA` |
+  | `AsyncInProgress` | `EOIP`, or a second asynchronous transfer on a descriptor (no `iberr`) |
+  | `NotSupported` | `ECAP` |
+  | `FileSystemError` | `EFSO` |
+  | `BusError` | `EBUS` |
+  | `StatusByteOverflow` | `ESTB` |
+  | `SrqStuck` | `ESRQ` |
+  | `TableProblem` | `ETAB` |
+  | `Locked` | `ELCK` |
+  | `NotifyRearmFailed` | `EARM` |
+  | `InvalidDescriptor` | `EHDL` |
+  | `WaitInProgress` | `EWIP` |
+  | `EventReset` | `ERST` |
+  | `PowerLost` | `EPWR` |
+  | `Unknown` | any other `iberr` |
+  | `LibraryNotFound` | no compatible library was loaded (no `iberr`) |
+  | `DeviceOpenFailed` | `ibdev` refused the device (with its `iberr`) |
+
+  `EABO` (timeout or abort) throws `GpibTimeoutException` instead.
 - One `Ni488Driver` per process is enough (a `ResourceManager` exposes its own as `GpibDriver`); it is thread safe,
   starts its helper threads on demand, stops them when idle, and needs no disposal.
 - A device or board object is not safe for concurrent calls: run one operation at a time on it. Different devices
   can be used from different threads. A second asynchronous transfer on the same descriptor fails with
-  `VI_ERROR_IN_PROGRESS`.
+  `GpibError.AsyncInProgress`.
 - Disposing a device takes its descriptor offline (`ibonl`). It ends queued and running asynchronous operations with
   `ObjectDisposedException` (a running transfer is stopped first), and any later call throws
   `ObjectDisposedException`. Do not dispose while a synchronous call on the same object runs on another thread.
@@ -198,6 +242,7 @@ The interface session acts as the controller:
 
 Line states (`AtnState`, `SrqState`, `RenState`, `NdacState`) come from `iblines`; `IsControllerInCharge`,
 `IsSystemController`, `AddressState` (a `GpibAddressState`) and the board's own addresses are also available.
+`GpibAtnMode` and `GpibAddressState` are in the `VisaCs.Gpib` namespace.
 
 Service request events fire when SRQ becomes asserted; serial-poll the requesting device to release it. While SRQ
 stays asserted the event repeats once a second, because SRQ is sampled and a quick release followed by a new

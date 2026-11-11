@@ -40,59 +40,67 @@ public sealed class GpibSession : GpibSessionBase
         get
         {
             ThrowIfDisposed();
-            lock (_boardLock) return _board ??= Driver.OpenBoard(_name.Board);
+            lock (_boardLock) return _board ??= GpibErrorMapping.Call(() => Driver.OpenBoard(_name.Board));
         }
     }
 
     /// <summary>Re-address the device before every read and write (VI_ATTR_GPIB_READDR_EN).</summary>
     public bool ReaddressingEnabled
     {
-        get => Device.ReaddressingEnabled;
-        set => Device.ReaddressingEnabled = value;
+        get => GpibErrorMapping.Call(() => Device.ReaddressingEnabled);
+        set => GpibErrorMapping.Call(() => Device.ReaddressingEnabled = value);
     }
 
     /// <summary>Unaddress the device after every read and write (VI_ATTR_GPIB_UNADDR_EN).</summary>
     public bool UnaddressingEnabled
     {
-        get => Device.UnaddressingEnabled;
-        set => Device.UnaddressingEnabled = value;
+        get => GpibErrorMapping.Call(() => Device.UnaddressingEnabled);
+        set => GpibErrorMapping.Call(() => Device.UnaddressingEnabled = value);
     }
 
     /// <summary>State of the REN line (VI_ATTR_GPIB_REN_STATE).</summary>
-    public LineState RenState => LineFrom(Board.GetLines(), GpibLines.Ren);
+    public LineState RenState => LineFrom(Board, GpibLines.Ren);
 
     private protected override ValueTask OpenCoreAsync(int connectTimeoutMs, CancellationToken cancellationToken, bool async)
     {
-        _device = Driver.OpenDevice(_name.Board, _name.PrimaryAddress, _name.SecondaryAddress);
+        _device = GpibErrorMapping.Call(() => Driver.OpenDevice(_name.Board, _name.PrimaryAddress, _name.SecondaryAddress));
         return default;
     }
 
     private protected override void CloseDescriptors()
     {
-        Interlocked.Exchange(ref _device, null)?.Dispose();
+        if (Interlocked.Exchange(ref _device, null) is { } device) GpibErrorMapping.Call(device.Dispose);
         lock (_boardLock)
         {
-            _board?.Dispose();
+            if (_board is { } board) GpibErrorMapping.Call(board.Dispose);
             _board = null;
         }
     }
 
-    private protected override ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async) =>
-        async
-            ? Device.SerialPollAsync(GpibTimeouts.Milliseconds(deadline), deadline.CancellationToken)
-            : new(Device.SerialPoll(GpibTimeouts.Milliseconds(deadline)));
+    private protected override ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async)
+    {
+        var device = Device;
+        int timeout = GpibTimeouts.Milliseconds(deadline);
+        return async
+            ? GpibErrorMapping.CallAsync(() => device.SerialPollAsync(timeout, deadline.CancellationToken))
+            : new(GpibErrorMapping.Call(() => device.SerialPoll(timeout)));
+    }
 
     private protected override ValueTask ClearCoreAsync(Deadline deadline, bool async)
     {
-        if (async) return Device.ClearAsync(GpibTimeouts.Milliseconds(deadline), deadline.CancellationToken);
-        Device.Clear(GpibTimeouts.Milliseconds(deadline));
+        var device = Device;
+        int timeout = GpibTimeouts.Milliseconds(deadline);
+        if (async) return GpibErrorMapping.CallAsync(() => device.ClearAsync(timeout, deadline.CancellationToken));
+        GpibErrorMapping.Call(() => device.Clear(timeout));
         return default;
     }
 
     private protected override ValueTask TriggerCoreAsync(Deadline deadline, bool async)
     {
-        if (async) return Device.TriggerAsync(GpibTimeouts.Milliseconds(deadline), deadline.CancellationToken);
-        Device.Trigger(GpibTimeouts.Milliseconds(deadline));
+        var device = Device;
+        int timeout = GpibTimeouts.Milliseconds(deadline);
+        if (async) return GpibErrorMapping.CallAsync(() => device.TriggerAsync(timeout, deadline.CancellationToken));
+        GpibErrorMapping.Call(() => device.Trigger(timeout));
         return default;
     }
 
@@ -105,38 +113,46 @@ public sealed class GpibSession : GpibSessionBase
         switch (mode)
         {
             case RemoteLocalMode.Deassert:
-                Board.SetRemoteEnable(false);
+                SetRemoteEnable(false);
                 break;
             case RemoteLocalMode.Assert:
-                Board.SetRemoteEnable(true);
+                SetRemoteEnable(true);
                 break;
             case RemoteLocalMode.DeassertGoToLocal:
-                Device.GoToLocal();
-                Board.SetRemoteEnable(false);
+                GpibErrorMapping.Call(Device.GoToLocal);
+                SetRemoteEnable(false);
                 break;
             case RemoteLocalMode.AssertAddress:
-                Board.SetRemoteEnable(true);
+                SetRemoteEnable(true);
                 await GpibTimeouts.SendCommandAsync(Board, address, deadline, async).ConfigureAwait(false);
                 break;
             case RemoteLocalMode.AssertLocalLockout:
-                Board.SetRemoteEnable(true);
+                SetRemoteEnable(true);
                 await GpibTimeouts.SendCommandAsync(Board, new[] { GpibCommand.LocalLockout }, deadline, async).ConfigureAwait(false);
                 break;
             case RemoteLocalMode.AssertAddressLocalLockout:
-                Board.SetRemoteEnable(true);
+                SetRemoteEnable(true);
                 await GpibTimeouts.SendCommandAsync(Board, (byte[])[.. address, GpibCommand.LocalLockout], deadline, async).ConfigureAwait(false);
                 break;
             case RemoteLocalMode.AddressGoToLocal:
-                Device.GoToLocal();
+                GpibErrorMapping.Call(Device.GoToLocal);
                 break;
         }
+    }
+
+    private void SetRemoteEnable(bool asserted)
+    {
+        var board = Board;
+        GpibErrorMapping.Call(() => board.SetRemoteEnable(asserted));
     }
 
     private protected override Func<CancellationToken, ValueTask<ServiceRequestEventArgs?>> CreateServiceRequestWait()
     {
         var device = Device;
         return async token =>
-            await device.WaitForServiceRequestAsync(1000, token).ConfigureAwait(false) is { } stb ? new ServiceRequestEventArgs(stb) : null;
+            await GpibErrorMapping.CallAsync(() => device.WaitForServiceRequestAsync(1000, token)).ConfigureAwait(false) is { } stb
+                ? new ServiceRequestEventArgs(stb)
+                : null;
     }
 
     private protected override void RegisterAttributes(AttributeTable table)

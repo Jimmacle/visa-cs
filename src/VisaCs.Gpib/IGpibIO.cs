@@ -11,16 +11,18 @@ public readonly record struct GpibReadResult(int Count, bool End);
 /// <summary>Byte transfers on a GPIB device or board descriptor.</summary>
 /// <remarks>
 /// <para>
-/// Timeouts are per call. <see cref="Timeout.Infinite"/> (or any negative value) waits without limit; 0 asks for the
-/// shortest wait the driver supports. <see cref="Ni488Driver"/> rounds up to the next NI-488.2 step (10 ms, 30 ms,
-/// 100 ms, 300 ms, 1 s, 3 s, 10 s, 30 s, 100 s, 300 s, 1000 s) and caps longer timeouts at 1000 s.
+/// Timeouts are per call. <see cref="Timeout.Infinite"/> (or any negative value) waits without limit; 0 does not
+/// wait: the call times out unless it can complete at once. <see cref="Ni488Driver"/> sets the NI-488.2 timeout
+/// (ibtmo) for each call: TNONE for a negative value, T10us (the shortest, NI-488.2 has no zero timeout) for 0, and
+/// otherwise the next step up (10 ms, 30 ms, 100 ms, 300 ms, 1 s, 3 s, 10 s, 30 s, 100 s, 300 s, 1000 s), capping
+/// longer timeouts at 1000 s.
 /// </para>
 /// <para>
-/// Errors throw <see cref="VisaException"/> with the matching status (for example
-/// <see cref="VisaStatus.ErrorNoListeners"/> when no device listens) and the driver's error code in
-/// <see cref="VisaException.NativeError"/>. A timeout throws <see cref="VisaTimeoutException"/> with the number of
-/// bytes already sent, except that reads return the bytes that arrived before the timeout (with
-/// <see cref="GpibReadResult.End"/> false) and throw only when nothing arrived.
+/// Driver and bus errors throw <see cref="GpibException"/>, whose <see cref="GpibException.Error"/> names the
+/// failure (for example <see cref="GpibError.NoListeners"/>, NI-488.2 ENOL, when no device listens) and whose
+/// <see cref="GpibException.NativeError"/> holds the driver's <c>iberr</c>. A timeout throws
+/// <see cref="GpibTimeoutException"/> with the number of bytes already sent, except that reads return the bytes that
+/// arrived before the timeout (with <see cref="GpibReadResult.End"/> false) and throw only when nothing arrived.
 /// </para>
 /// <para>
 /// Cancelling the token of an asynchronous method throws <see cref="OperationCanceledException"/>.
@@ -30,7 +32,7 @@ public readonly record struct GpibReadResult(int Count, bool End);
 /// <para>
 /// An object is not safe for concurrent calls from several threads: run one operation at a time on it. Different
 /// devices may be used from different threads. <see cref="Ni488Driver"/> rejects a second asynchronous transfer on the
-/// same descriptor with <see cref="VisaStatus.ErrorInProgress"/>; all <see cref="IGpibBoard"/> objects of one board
+/// same descriptor with <see cref="GpibError.AsyncInProgress"/>; all <see cref="IGpibBoard"/> objects of one board
 /// share that board's descriptor.
 /// </para>
 /// <para>

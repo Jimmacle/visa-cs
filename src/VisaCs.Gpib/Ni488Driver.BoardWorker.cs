@@ -156,7 +156,7 @@ public sealed partial class Ni488Driver
         {
             if (!TryDrop()) return; // running: it ends when the driver returns
             worker.Remove(this);
-            Fail(AsyncIO.Canceled(new VisaTimeoutException("The GPIB operation was canceled."), token));
+            Fail(GpibErrors.Canceled("The GPIB operation was canceled.", token));
         }
     }
 
