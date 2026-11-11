@@ -63,10 +63,11 @@ dotnet add package VisaCs --version 0.1.0
 
 | You want | Package |
 |---|---|
-| VISA: resource manager, sessions, every interface | `VisaCs` (brings in the four component libraries) |
+| VISA: resource manager, sessions, every interface | `VisaCs` (brings in the component libraries) |
 | Only a serial port, without VISA | `VisaCs.Serial` |
 | Only USB host access (WinUSB, usbfs, libusb), without VISA | `VisaCs.Usb` |
 | Only an NI-488.2 (GPIB) binding, without VISA | `VisaCs.Gpib` |
+| Only IEEE 488.2 blocks, value lists and printf/scanf formatting, without VISA | `VisaCs.Formatting` |
 | Simulated instruments in test projects | `VisaCs.Simulation`, same version as `VisaCs` |
 
 ## Libraries
@@ -75,10 +76,11 @@ The hardware access layers are separate libraries, so they can be used without t
 
 | Library | Contents | Depends on |
 |---|---|---|
-| `VisaCs` | VISA itself: `ResourceManager`, sessions, resource names, VXI-11, HiSLIP, raw socket, VICP, USBTMC, PXI, formatted I/O, discovery | the four below |
+| `VisaCs` | VISA itself: `ResourceManager`, sessions, resource names, VXI-11, HiSLIP, raw socket, VICP, USBTMC, PXI, discovery | the component libraries below |
 | `VisaCs.Serial` | `NativeSerialPort`: serial ports through the Win32 comm API or termios, without `System.IO.Ports` ([usage](docs/serial.md#without-visa)) | `VisaCs.Primitives` |
 | `VisaCs.Usb` | `IUsbBackend` and its WinUSB, usbfs and libusb implementations: enumeration and control, bulk and interrupt transfers ([usage](docs/usb.md#without-visa)) | `VisaCs.Primitives` |
 | `VisaCs.Gpib` | `Ni488Driver`: GPIB through any NI-488.2 compatible library, bound at run time ([usage](docs/gpib.md#without-visa)) | `VisaCs.Primitives` |
+| `VisaCs.Formatting` | `Ieee4882` (definite-length blocks, binary arrays with a byte order, ASCII value lists) and `VisaFormatter` (the VISA printf/scanf format language) ([usage](docs/using-sessions.md#without-a-session)) | `VisaCs.Primitives` |
 | `VisaCs.Primitives` | `VisaStatus` and the `VisaException` types the other libraries report errors with | |
 | `VisaCs.Simulation` | Simulated instruments and protocol servers for testing without hardware | `VisaCs` |
 
@@ -135,7 +137,6 @@ src/VisaCs/                 the VISA library
   Gpib/                     GPIB sessions
   Pxi/                      PCI sysfs access and PxiSession
   Discovery/                find expressions, VXI-11 broadcast, mDNS
-  Formatting/               viPrintf/viScanf format language
 src/VisaCs.Serial/          native serial ports (Win32, termios)
 src/VisaCs.Usb/             USB backends: WinUSB, usbfs, libusb
 src/VisaCs.Gpib/            NI-488.2 binding

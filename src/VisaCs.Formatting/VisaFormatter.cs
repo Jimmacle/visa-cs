@@ -5,7 +5,7 @@ namespace VisaCs.Formatting;
 
 /// <summary>
 /// The VISA formatted I/O language (viPrintf / viScanf), usable on its own or through
-/// <see cref="MessageBasedSession.Printf"/> and <see cref="MessageBasedSession.Scanf(string, object[])"/>.
+/// <c>MessageBasedSession.Printf</c> and <c>MessageBasedSession.Scanf</c> in the <c>VisaCs</c> package.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -59,8 +59,9 @@ public static partial class VisaFormatter
     /// True if <paramref name="format"/> contains a binary conversion (<c>%b</c>, <c>%B</c>, <c>%y</c>), so that a read
     /// for it must not stop at a termination character inside the binary data. False for invalid formats.
     /// </summary>
-    internal static bool HasBinaryConversion(string format)
+    public static bool HasBinaryConversion(string format)
     {
+        ArgumentNullException.ThrowIfNull(format);
         try
         {
             for (int i = 0; i < format.Length;)
@@ -184,7 +185,7 @@ public static partial class VisaFormatter
         }
         else if ("diuoxXfeEgGscbyBtT%".IndexOf(spec.Conversion) < 0)
         {
-            throw new VisaException(VisaStatus.ErrorFormatNotSupported, $"Unsupported format conversion '%{spec.Conversion}'.");
+            throw FormatErrors.NotSupported($"Unsupported format conversion '%{spec.Conversion}'.");
         }
         return spec;
     }
@@ -217,7 +218,7 @@ public static partial class VisaFormatter
             : throw Invalid($"Number too large in format: '{s[start..i]}'.");
     }
 
-    private static VisaException Invalid(string message, Exception? inner = null) => new(VisaStatus.ErrorInvalidFormat, message, inner);
+    private static VisaException Invalid(string message, Exception? inner = null) => FormatErrors.Invalid(message, inner);
 
     private static int ElementSize(string size) => size switch
     {

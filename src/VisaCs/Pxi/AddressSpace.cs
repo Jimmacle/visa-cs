@@ -18,12 +18,3 @@ public enum AddressSpace
     /// <summary>Base address register 5 (VI_PXI_BAR5_SPACE).</summary>
     PxiBar5 = 16,
 }
-
-/// <summary>Byte order of register data (VI_BIG_ENDIAN / VI_LITTLE_ENDIAN).</summary>
-public enum ByteOrder
-{
-    /// <summary>Most significant byte first (VI_BIG_ENDIAN).</summary>
-    BigEndian = 0,
-    /// <summary>Least significant byte first (VI_LITTLE_ENDIAN); the PCI byte order.</summary>
-    LittleEndian = 1,
-}

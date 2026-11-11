@@ -2,7 +2,6 @@ using System.Buffers.Binary;
 using System.Collections;
 using System.Globalization;
 using System.Text;
-using VisaCs.Internal;
 
 namespace VisaCs.Formatting;
 
@@ -16,8 +15,11 @@ public static partial class VisaFormatter
     public static byte[] Format(string format, IReadOnlyList<object?> args, Encoding? encoding = null) =>
         Format(format, args, encoding, out _);
 
-    /// <summary>Formats like <see cref="Format(string, IReadOnlyList{object?}, Encoding?)"/> and reports how many arguments the format used.</summary>
-    internal static byte[] Format(string format, IReadOnlyList<object?> args, Encoding? encoding, out int argumentsUsed)
+    /// <summary>
+    /// Formats like <see cref="Format(string, IReadOnlyList{object?}, Encoding?)"/> and reports how many arguments the
+    /// format used, so that the rest can go to a following <see cref="Parse"/> (as viQueryf does).
+    /// </summary>
+    public static byte[] Format(string format, IReadOnlyList<object?> args, Encoding? encoding, out int argumentsUsed)
     {
         ArgumentNullException.ThrowIfNull(format);
         ArgumentNullException.ThrowIfNull(args);
@@ -182,7 +184,7 @@ public static partial class VisaFormatter
                 return Pad(s, spec, allowZero: false);
             }
             default:
-                throw new VisaException(VisaStatus.ErrorFormatNotSupported, $"'%{conversion}' cannot format a value.");
+                throw FormatErrors.NotSupported($"'%{conversion}' cannot format a value.");
         }
 
         string number = prefix + body;
@@ -213,7 +215,7 @@ public static partial class VisaFormatter
     }
 
     /// <summary>C-style floating point formatting of a non-negative value.</summary>
-    internal static string FormatFloat(double v, char conversion, int precision, bool alternate)
+    private static string FormatFloat(double v, char conversion, int precision, bool alternate)
     {
         if (double.IsNaN(v)) return char.IsUpper(conversion) ? "NAN" : "nan";
         if (double.IsInfinity(v)) return char.IsUpper(conversion) ? "INF" : "inf";
