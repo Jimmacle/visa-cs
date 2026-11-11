@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using VisaCs.Simulation;
 using VisaCs.Usb;
@@ -17,7 +18,32 @@ public sealed class UsbTmcDeviceTests
         return (UsbTmcDevice.Open(backend, backend.EnumerateDevices()[0]), device, instrument);
     }
 
+    /// <summary>Opens a simulated device with a gate the test can watch, to know when another caller holds the device.</summary>
+    private static (UsbTmcDevice Tmc, SemaphoreSlim Gate, SimulatedInstrument Instrument) OpenWithGate()
+    {
+        var instrument = new SimulatedInstrument();
+        var backend = new SimulatedUsbBackend();
+        backend.Devices.Add(new SimulatedUsbTmcDevice(instrument));
+        var gate = new SemaphoreSlim(1, 1);
+        var tmc = new UsbTmcDevice(backend.Open(backend.EnumerateDevices()[0], 0), gate: gate);
+        tmc.ReadCapabilities(2000);
+        return (tmc, gate, instrument);
+    }
+
     private static string Text(byte[] data) => Encoding.ASCII.GetString(data);
+
+    /// <summary>Polls until <paramref name="condition"/> holds, failing after a deadline generous enough for a loaded machine.</summary>
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition, string what)
+    {
+        var watch = Stopwatch.StartNew();
+        while (!await condition())
+        {
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), $"Timed out waiting for {what}.");
+            await Task.Delay(10);
+        }
+    }
+
+    private static async Task<bool> MessageAvailableAsync(UsbTmcDevice tmc) => (await tmc.ReadStatusByteAsync(2000) & 0x10) != 0;
 
     [Fact]
     public async Task QueriesAndReadsCapabilities()
@@ -94,8 +120,8 @@ public sealed class UsbTmcDeviceTests
         using var disposeTmc = tmc;
         Assert.Equal(0, tmc.ReadStatusByte(2000) & 0x10);
         tmc.Write("*IDN?\n"u8, end: true, 2000);
-        await Task.Delay(100); // the simulated instrument answers in the background
-        Assert.NotEqual(0, await tmc.ReadStatusByteAsync(2000) & 0x10); // message available
+        // The simulated instrument answers in the background; then the status byte shows the message available.
+        await WaitUntilAsync(() => MessageAvailableAsync(tmc), "the message available bit");
     }
 
     [Fact]
@@ -178,44 +204,55 @@ public sealed class UsbTmcDeviceTests
     [Fact]
     public async Task WaitingForAnotherCallerEndsAtTheTimeout()
     {
-        var (tmc, _, _) = Open();
+        var (tmc, gate, _) = OpenWithGate();
         using var disposeTmc = tmc;
-        var reader = Task.Run(() => Assert.Throws<UsbTimeoutException>(() => tmc.Read(new byte[16], 1500)));
-        await Task.Delay(200);
-        var watch = System.Diagnostics.Stopwatch.StartNew();
+        // The other caller reads until it is cancelled, long after the bound below.
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var reader = tmc.ReadAsync(new byte[16], Timeout.Infinite, null, stop.Token).AsTask();
+        await WaitUntilAsync(() => Task.FromResult(gate.CurrentCount == 0), "the other caller to hold the device");
+        var watch = Stopwatch.StartNew();
         Assert.Throws<UsbTimeoutException>(() => tmc.Query("*IDN?\n"u8, 200));
-        Assert.True(watch.ElapsedMilliseconds < 1200);
-        await reader;
+        Assert.True(watch.ElapsedMilliseconds < 5000, $"Waited {watch.ElapsedMilliseconds} ms for the other caller.");
+        stop.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reader);
     }
 
     [Fact]
     public async Task ZeroTimeoutDoesNotWait()
     {
-        var (tmc, _, instrument) = Open();
+        var (tmc, gate, instrument) = OpenWithGate();
         using var disposeTmc = tmc;
-
-        // Nothing to read: fails at once.
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-        Assert.Throws<UsbTimeoutException>(() => tmc.Read(new byte[64], 0));
-        await Assert.ThrowsAsync<UsbTimeoutException>(async () => await tmc.ReadAsync(new byte[64], 0));
-        Assert.True(watch.ElapsedMilliseconds < 1000, $"Reads with timeout 0 took {watch.ElapsedMilliseconds} ms.");
 
         // What can complete at once does: the simulated device takes bulk-OUT at once, and answers a read at once
         // when the response is ready.
         tmc.Write("*IDN?\n"u8, end: true, 0);
-        await Task.Delay(200); // the simulated instrument answers in the background
+        await WaitUntilAsync(() => MessageAvailableAsync(tmc), "the response"); // the instrument answers in the background
         var buffer = new byte[256];
         var result = tmc.Read(buffer, 0);
         Assert.True(result.End);
         Assert.Equal(instrument.Identity + "\n", Encoding.ASCII.GetString(buffer, 0, result.Count));
 
-        // Another caller holds the device: fails at once instead of waiting for it.
-        var reader = Task.Run(() => Assert.Throws<UsbTimeoutException>(() => tmc.Read(new byte[16], 1500)));
-        await Task.Delay(200);
-        watch.Restart();
-        Assert.Throws<UsbTimeoutException>(() => tmc.Query("*IDN?\n"u8, 0));
-        Assert.True(watch.ElapsedMilliseconds < 500, $"Waited {watch.ElapsedMilliseconds} ms for the other caller.");
-        await reader;
+        // Another caller holds the device: fails at once instead of waiting for it (until it is cancelled, after 30 s).
+        using (var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+        {
+            var reader = tmc.ReadAsync(new byte[16], Timeout.Infinite, null, stop.Token).AsTask();
+            await WaitUntilAsync(() => Task.FromResult(gate.CurrentCount == 0), "the other caller to hold the device");
+            var watch = Stopwatch.StartNew();
+            Assert.Throws<UsbTimeoutException>(() => tmc.Query("*IDN?\n"u8, 0));
+            Assert.True(watch.ElapsedMilliseconds < 5000, $"Waited {watch.ElapsedMilliseconds} ms for the other caller.");
+            stop.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reader);
+        }
+
+        // The response is not ready (the instrument answers after 20 s): a read fails without waiting for it. A read
+        // that times out still runs the USBTMC abort sequence, which takes some time, more on a loaded machine.
+        tmc.Write("DELAY? 20000\n"u8, end: true, 0);
+        var read = Stopwatch.StartNew();
+        Assert.Throws<UsbTimeoutException>(() => tmc.Read(new byte[64], 0));
+        Assert.True(read.ElapsedMilliseconds < 5000, $"A read with timeout 0 took {read.ElapsedMilliseconds} ms.");
+        read.Restart();
+        await Assert.ThrowsAsync<UsbTimeoutException>(async () => await tmc.ReadAsync(new byte[64], 0));
+        Assert.True(read.ElapsedMilliseconds < 5000, $"A read with timeout 0 took {read.ElapsedMilliseconds} ms.");
     }
 
     [Fact]
@@ -226,10 +263,11 @@ public sealed class UsbTmcDeviceTests
         using var handle = backend.Open(backend.EnumerateDevices()[0], 0);
         byte bulkIn = handle.Interface.FindEndpoint(UsbTransferType.Bulk, input: true)!.Address;
         byte interruptIn = handle.Interface.FindEndpoint(UsbTransferType.Interrupt, input: true)!.Address;
-        var watch = System.Diagnostics.Stopwatch.StartNew();
+        // Nothing will arrive, so waiting would never end; the bound is generous for a loaded machine.
+        var watch = Stopwatch.StartNew();
         Assert.Throws<UsbTimeoutException>(() => handle.BulkTransfer(bulkIn, new byte[512], 0));
         await Assert.ThrowsAsync<UsbTimeoutException>(async () => await handle.InterruptTransferAsync(interruptIn, new byte[8], 0));
-        Assert.True(watch.ElapsedMilliseconds < 1000);
+        Assert.True(watch.ElapsedMilliseconds < 5000, $"Transfers with timeout 0 took {watch.ElapsedMilliseconds} ms.");
     }
 
     [Fact]

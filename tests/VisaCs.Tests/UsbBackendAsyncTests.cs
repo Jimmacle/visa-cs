@@ -384,11 +384,12 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         if (!Enabled) return;
         using var c = Connect();
 
-        // No request pending, so nothing to read: a transfer with timeout 0 fails at once instead of waiting.
+        // No request pending, so nothing to read: a transfer with timeout 0 fails at once instead of waiting (which would
+        // never end). The bound is generous: a timed-out transfer is cancelled in the kernel, slower on a loaded machine.
         var watch = Stopwatch.StartNew();
         Assert.Throws<UsbTimeoutException>(() => c.Handle.BulkTransfer(c.BulkIn, new byte[512], 0));
         await Assert.ThrowsAsync<UsbTimeoutException>(async () => await c.Handle.BulkTransferAsync(c.BulkIn, new byte[512], 0));
-        Assert.True(watch.ElapsedMilliseconds < 1000, $"Transfers with timeout 0 took {watch.ElapsedMilliseconds} ms.");
+        Assert.True(watch.ElapsedMilliseconds < 5000, $"Transfers with timeout 0 took {watch.ElapsedMilliseconds} ms.");
         Assert.Equal(Fixture.Instrument.Identity, await QueryAsync(c, "*IDN?"));
     }
 
