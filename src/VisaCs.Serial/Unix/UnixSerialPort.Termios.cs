@@ -105,7 +105,10 @@ internal sealed unsafe partial class UnixSerialPort
 
         // One call applies everything; on failure the port keeps its previous settings.
         if (Libc.ioctl(fd, L.TCSETS2, &t) != 0)
-            throw NotSupported($"The serial port rejected the settings (baud {s.BaudRate}, errno {Marshal.GetLastPInvokeError()}).");
+        {
+            int errno = Marshal.GetLastPInvokeError();
+            throw NotSupported($"The serial port rejected the settings (baud {s.BaudRate}, errno {errno}).", errno);
+        }
     }
 
     // ------------------------------------------------------------------ macOS (not tested on a Mac)
@@ -158,7 +161,10 @@ internal sealed unsafe partial class UnixSerialPort
         bool custom = Array.IndexOf(MacBauds, s.BaudRate) < 0;
         Native.cfsetspeed(tio, (nuint)(custom ? 9600 : s.BaudRate));
         if (Native.tcsetattr(fd, 0, tio) != 0)
-            throw NotSupported($"The serial port rejected the settings (errno {Marshal.GetLastPInvokeError()}).");
+        {
+            int errno = Marshal.GetLastPInvokeError();
+            throw NotSupported($"The serial port rejected the settings (errno {errno}).", errno);
+        }
         if (!custom) return;
         nuint speed = (nuint)s.BaudRate;
         if (Libc.ioctl(fd, M.IOSSIOSPEED, &speed) != 0)

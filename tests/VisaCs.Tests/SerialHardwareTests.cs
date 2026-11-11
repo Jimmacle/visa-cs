@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using VisaCs.Serial;
 
 namespace VisaCs.Tests;
 

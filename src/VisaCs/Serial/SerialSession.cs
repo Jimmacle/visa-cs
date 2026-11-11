@@ -149,7 +149,7 @@ public sealed class SerialSession : MessageBasedSession
     /// Bytes waiting to be read (VI_ATTR_ASRL_AVAIL_NUM): in the driver, plus bytes the session already took from
     /// the port but has not returned (after END_IN = last bit).
     /// </summary>
-    public int BytesAvailable => Port.BytesAvailable + _pendingCount;
+    public int BytesAvailable => OnPort(static p => p.BytesAvailable) + _pendingCount;
 
     /// <summary>
     /// State of the RTS output (VI_ATTR_ASRL_RTS_STATE). Asserted on open. Cannot be set while RTS/CTS flow control
@@ -157,8 +157,8 @@ public sealed class SerialSession : MessageBasedSession
     /// </summary>
     public LineState RtsState
     {
-        get => ToState(Port.Rts);
-        set => Port.Rts = value == LineState.Asserted;
+        get => ToState(OnPort(static p => p.Rts));
+        set => OnPort(p => p.Rts = value == LineState.Asserted);
     }
 
     /// <summary>
@@ -167,27 +167,27 @@ public sealed class SerialSession : MessageBasedSession
     /// </summary>
     public LineState DtrState
     {
-        get => ToState(Port.Dtr);
-        set => Port.Dtr = value == LineState.Asserted;
+        get => ToState(OnPort(static p => p.Dtr));
+        set => OnPort(p => p.Dtr = value == LineState.Asserted);
     }
 
     /// <summary>State of the CTS input (VI_ATTR_ASRL_CTS_STATE).</summary>
-    public LineState CtsState => ToState(Port.Cts);
+    public LineState CtsState => ToState(OnPort(static p => p.Cts));
 
     /// <summary>State of the DSR input (VI_ATTR_ASRL_DSR_STATE).</summary>
-    public LineState DsrState => ToState(Port.Dsr);
+    public LineState DsrState => ToState(OnPort(static p => p.Dsr));
 
     /// <summary>State of the DCD (carrier detect) input (VI_ATTR_ASRL_DCD_STATE).</summary>
-    public LineState DcdState => ToState(Port.Dcd);
+    public LineState DcdState => ToState(OnPort(static p => p.Dcd));
 
     /// <summary>State of the RI (ring indicator) input (VI_ATTR_ASRL_RI_STATE).</summary>
-    public LineState RiState => ToState(Port.Ri);
+    public LineState RiState => ToState(OnPort(static p => p.Ri));
 
     /// <summary>Holds the transmit line in the break state while asserted (VI_ATTR_ASRL_BREAK_STATE).</summary>
     public LineState BreakState
     {
-        get => ToState(Port.Break);
-        set => Port.Break = value == LineState.Asserted;
+        get => ToState(OnPort(static p => p.Break));
+        set => OnPort(p => p.Break = value == LineState.Asserted);
     }
 
     /// <summary>When false, transmission is suspended as if XOFF had been received (VI_ATTR_ASRL_ALLOW_TRANSMIT). Default true.</summary>
@@ -196,12 +196,34 @@ public sealed class SerialSession : MessageBasedSession
         get => _allowTransmit;
         set
         {
-            Port.SetTransmitAllowed(value);
+            OnPort(p => p.SetTransmitAllowed(value));
             _allowTransmit = value;
         }
     }
 
     private static LineState ToState(bool asserted) => asserted ? LineState.Asserted : LineState.Unasserted;
+
+    // Every call into NativeSerialPort goes through OnPort or catches with SerialErrorMapping, so that the session
+    // reports VISA exceptions.
+
+    private T OnPort<T>(Func<NativeSerialPort, T> action)
+    {
+        var port = Port;
+        try
+        {
+            return action(port);
+        }
+        catch (Exception ex) when (SerialErrorMapping.TryMap(ex, out var mapped))
+        {
+            throw mapped;
+        }
+    }
+
+    private void OnPort(Action<NativeSerialPort> action) => OnPort(port =>
+    {
+        action(port);
+        return true;
+    });
 
     /// <summary>Applies one changed setting to the port; the property keeps its old value if the port rejects it.</summary>
     private void Reconfigure<T>(Func<SerialSettings, T, SerialSettings> change, T value)
@@ -218,6 +240,10 @@ public sealed class SerialSession : MessageBasedSession
         {
             throw new VisaException(VisaStatus.ErrorAttributeStateNotSupported, ex.Message, ex);
         }
+        catch (Exception ex) when (SerialErrorMapping.TryMap(ex, out var mapped))
+        {
+            throw mapped;
+        }
         _settings = settings;
     }
 
@@ -230,7 +256,14 @@ public sealed class SerialSession : MessageBasedSession
 
     private protected override ValueTask OpenCoreAsync(int connectTimeoutMs, CancellationToken cancellationToken, bool async)
     {
-        _port = NativeSerialPort.Open(PortName, _settings);
+        try
+        {
+            _port = NativeSerialPort.Open(PortName, _settings);
+        }
+        catch (Exception ex) when (SerialErrorMapping.TryMap(ex, out var mapped))
+        {
+            throw mapped;
+        }
         return default;
     }
 
@@ -240,18 +273,32 @@ public sealed class SerialSession : MessageBasedSession
         return default;
     }
 
-    private ValueTask PortWriteAsync(ReadOnlyMemory<byte> data, Deadline deadline, bool async)
+    private async ValueTask PortWriteAsync(ReadOnlyMemory<byte> data, Deadline deadline, bool async)
     {
-        if (async) return Port.WriteAsync(data, deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Port.Write(data.Span, deadline.RemainingMilliseconds);
-        return default;
+        var port = Port;
+        try
+        {
+            if (async) await port.WriteAsync(data, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
+            else port.Write(data.Span, deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (SerialErrorMapping.TryMap(ex, out var mapped))
+        {
+            throw mapped;
+        }
     }
 
-    private ValueTask DrainAsync(Deadline deadline, bool async)
+    private async ValueTask DrainAsync(Deadline deadline, bool async)
     {
-        if (async) return Port.DrainAsync(deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Port.Drain(deadline.RemainingMilliseconds);
-        return default;
+        var port = Port;
+        try
+        {
+            if (async) await port.DrainAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
+            else port.Drain(deadline.RemainingMilliseconds);
+        }
+        catch (Exception ex) when (SerialErrorMapping.TryMap(ex, out var mapped))
+        {
+            throw mapped;
+        }
     }
 
     private protected override async ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
@@ -297,13 +344,19 @@ public sealed class SerialSession : MessageBasedSession
             n = Math.Min(target.Length, _pendingCount);
             _pending.AsSpan(_pendingOffset, n).CopyTo(target.Span);
         }
-        else if (async)
-        {
-            n = await Port.ReadAsync(target, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
-        }
         else
         {
-            n = Port.Read(target.Span, deadline.RemainingMilliseconds);
+            var port = Port;
+            try
+            {
+                n = async
+                    ? await port.ReadAsync(target, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                    : port.Read(target.Span, deadline.RemainingMilliseconds);
+            }
+            catch (Exception ex) when (SerialErrorMapping.TryMap(ex, out var mapped))
+            {
+                throw mapped;
+            }
         }
 
         int consumed = n;
@@ -351,12 +404,12 @@ public sealed class SerialSession : MessageBasedSession
     private protected override async ValueTask ClearCoreAsync(Deadline deadline, bool async)
     {
         DiscardPending();
-        Port.DiscardOutput();
+        OnPort(static p => p.DiscardOutput());
         if (IOProtocol == IOProtocol.Ieee4882Strings)
             await PortWriteAsync("*CLS\n"u8.ToArray(), deadline, async).ConfigureAwait(false);
         else
             await SendBreakCoreAsync(BreakLength, deadline.CancellationToken, async).ConfigureAwait(false);
-        Port.DiscardInput();
+        OnPort(static p => p.DiscardInput());
     }
 
     // Written as is: the command already ends with its terminator.
@@ -365,14 +418,14 @@ public sealed class SerialSession : MessageBasedSession
     private protected override void FlushTransportInput()
     {
         DiscardPending();
-        Port.DiscardInput();
+        OnPort(static p => p.DiscardInput());
     }
 
     private protected override ValueTask FlushTransportOutputAsync(Deadline deadline, bool async) => DrainAsync(deadline, async);
 
     private protected override ValueTask DiscardTransportOutputAsync(bool async)
     {
-        Port.DiscardOutput();
+        OnPort(static p => p.DiscardOutput());
         return default;
     }
 
@@ -404,22 +457,29 @@ public sealed class SerialSession : MessageBasedSession
     private async ValueTask SendBreakCoreAsync(int milliseconds, CancellationToken cancellationToken, bool async)
     {
         var port = Port;
-        port.Break = true;
         try
         {
-            if (async) await Task.Delay(Math.Max(1, milliseconds), cancellationToken).ConfigureAwait(false);
-            else Thread.Sleep(Math.Max(1, milliseconds));
-        }
-        finally
-        {
+            port.Break = true;
             try
             {
-                port.Break = false;
+                if (async) await Task.Delay(Math.Max(1, milliseconds), cancellationToken).ConfigureAwait(false);
+                else Thread.Sleep(Math.Max(1, milliseconds));
             }
-            catch (ObjectDisposedException)
+            finally
             {
-                // Closed meanwhile: closing ended the break.
+                try
+                {
+                    port.Break = false;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Closed meanwhile: closing ended the break.
+                }
             }
+        }
+        catch (Exception ex) when (SerialErrorMapping.TryMap(ex, out var mapped))
+        {
+            throw mapped;
         }
     }
 
