@@ -29,8 +29,8 @@ public class CoreParsingTests
         Assert.False(Ieee4882.ParseValue<bool>("OFF"));
         Assert.True(Ieee4882.ParseValue<bool>("+1.000E+00"));
         Assert.Equal(1.5, Ieee4882.ParseValue<double>("+1.50000E+00"));
-        Assert.Throws<FormatException>(() => Ieee4882.ParseValue<double>("abc"));
-        Assert.Throws<FormatException>(() => Ieee4882.ParseValue<byte>("300"));
+        Assert.ThrowsAny<FormatException>(() => Ieee4882.ParseValue<double>("abc"));
+        Assert.ThrowsAny<FormatException>(() => Ieee4882.ParseValue<byte>("300"));
     }
 
     [Theory]
@@ -89,7 +89,7 @@ public class CoreParsingTests
     [Fact]
     public void FormatReportsArgumentErrorsAsFormatExceptions()
     {
-        Assert.Throws<FormatException>(() => VisaFormatter.FormatString("%d", "abc"));
+        Assert.ThrowsAny<FormatException>(() => VisaFormatter.FormatString("%d", "abc"));
         VisaFormatter.Format("A %d %*d", [1, 4, 2, 9], null, out int used);
         Assert.Equal(3, used);
     }
@@ -113,6 +113,15 @@ internal sealed class OwnedUsbBackend : IUsbBackend, IDisposable
 
 public class CoreResourceManagerTests
 {
+    [Fact]
+    public void LanDiscoveryTimeoutMustNotBeNegative()
+    {
+        // LAN discovery listens for this long; a negative value would make Find wait forever.
+        var options = new ResourceManagerOptions { LanDiscoveryTimeoutMilliseconds = 0 };
+        Assert.Equal(0, options.LanDiscoveryTimeoutMilliseconds);
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.LanDiscoveryTimeoutMilliseconds = -1);
+    }
+
     private static ResourceManagerOptions LocalOnly() => new()
     {
         EnableLanDiscovery = false,

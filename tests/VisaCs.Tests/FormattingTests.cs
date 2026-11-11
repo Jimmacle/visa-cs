@@ -109,7 +109,7 @@ public class VisaFormatterTests
     [Fact]
     public void RejectsMissingArguments()
     {
-        Assert.Throws<FormatException>(() => VisaFormatter.FormatString("%d %d", 1));
+        Assert.ThrowsAny<FormatException>(() => VisaFormatter.FormatString("%d %d", 1));
         Assert.Throws<NotSupportedException>(() => VisaFormatter.FormatString("%k", 1));
     }
 
@@ -117,9 +117,9 @@ public class VisaFormatterTests
     public void DoesNotWrapItsOwnErrorsTwice()
     {
         // "Not enough arguments" is raised where BCL parse errors of an argument are wrapped; it must stay as it is.
-        var ex = Assert.Throws<FormatException>(() => VisaFormatter.FormatString("%d %d", 1));
+        var ex = Assert.ThrowsAny<FormatException>(() => VisaFormatter.FormatString("%d %d", 1));
         Assert.Null(ex.InnerException);
-        var wrapped = Assert.Throws<FormatException>(() => VisaFormatter.FormatString("%d", "abc"));
+        var wrapped = Assert.ThrowsAny<FormatException>(() => VisaFormatter.FormatString("%d", "abc"));
         Assert.IsType<FormatException>(wrapped.InnerException);
     }
 }
@@ -195,7 +195,7 @@ public sealed class FormattedIOSessionTests(SimulatorFixture fixture) : IClassFi
         Assert.Equal(VisaStatus.ErrorFormatNotSupported, Assert.Throws<VisaException>(() => session.Printf("%k\n", 1)).Status);
         var ex = Assert.Throws<VisaException>(() => session.Queryf("*IDN?\n", "%,"));
         Assert.Equal(VisaStatus.ErrorInvalidFormat, ex.Status);
-        Assert.IsType<FormatException>(ex.InnerException);
+        Assert.IsAssignableFrom<FormatException>(ex.InnerException);
         session.Printf("DATA:STORE %b\n", new byte[] { 1, 2, 3 });
         Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => session.QueryBinaryValues<int>("DATA:STORE?")).Status);
         Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => session.QueryAsciiValues<int>("ECHO? 1,abc")).Status);

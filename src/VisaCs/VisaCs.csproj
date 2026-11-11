@@ -8,7 +8,6 @@
     <PackageTags>visa;scpi;instrument;test;measurement;vxi11;hislip;usbtmc;gpib;lxi</PackageTags>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
     <ProjectReference Include="..\VisaCs.Serial\VisaCs.Serial.csproj" />
     <ProjectReference Include="..\VisaCs.Usb\VisaCs.Usb.csproj" />
     <ProjectReference Include="..\VisaCs.Gpib\VisaCs.Gpib.csproj" />

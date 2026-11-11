@@ -45,7 +45,16 @@ public sealed class ResourceManagerOptions
     public bool EnableMdnsDiscovery { get; set; } = true;
 
     /// <summary>How long LAN discovery (VXI-11 and mDNS together) listens for replies, in milliseconds. Default 1000.</summary>
-    public int LanDiscoveryTimeoutMilliseconds { get; set; } = 1000;
+    /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
+    public int LanDiscoveryTimeoutMilliseconds
+    {
+        get;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            field = value;
+        }
+    } = 1000;
 
     /// <summary>Extra addresses (unicast or broadcast) probed by VXI-11 discovery, even when <see cref="EnableLanDiscovery"/> is false.</summary>
     public IList<IPAddress> LanDiscoveryTargets { get; } = new List<IPAddress>();

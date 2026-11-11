@@ -14,7 +14,7 @@ dotnet nuget add source https://nuget.pkg.github.com/Jimmacle/index.json --name 
 dotnet add package VisaCs --version 0.1.0
 ```
 
-`VisaCs` brings in `VisaCs.Primitives`, `VisaCs.Serial`, `VisaCs.Usb`, `VisaCs.Gpib`, `VisaCs.Formatting`, `VisaCs.Pci` and `VisaCs.Lan`. Add `VisaCs.Simulation`
+`VisaCs` brings in `VisaCs.Serial`, `VisaCs.Usb`, `VisaCs.Gpib`, `VisaCs.Formatting`, `VisaCs.Pci` and `VisaCs.Lan`. Add `VisaCs.Simulation`
 to test projects to run against simulated instruments.
 
 ## Quick start

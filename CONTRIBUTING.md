@@ -51,9 +51,10 @@ own. They follow these rules:
 
 - **Dependencies.** A component library references no other VisaCs project and no third-party package. It may link
   internal helpers from `src/Shared/` as source. `VisaCs` (the VISA library) references all of them.
-  `tests/VisaCs.Tests/PackageLayoutTests.cs` enforces this.
+  `tests/VisaCs.Tests/PackageLayoutTests.cs` enforces this: a component assembly references no assembly whose name
+  starts with `VisaCs`.
 - **Namespaces.** Every public type of a component library is in that library's namespace (`VisaCs.Serial`,
-  `VisaCs.Usb`, ...).
+  `VisaCs.Usb`, ...) or a sub-namespace of it (`VisaCs.Lan.Rpc`). `PackageLayoutTests` checks this too.
 - **Errors.**
   - Device, OS and protocol failures throw the library's own exception, derived from `System.IO.IOException` and
     named `<Area>Exception` (`SerialPortException`, `UsbException`, `GpibException`, `LanException`,
@@ -67,7 +68,7 @@ own. They follow these rules:
   - `VisaCs.Formatting` throws `FormatException` for invalid formats and input, and `NotSupportedException` for
     unsupported conversions.
 - **Mapping to VISA.** `VisaCs` translates each library's exceptions to `VisaException`/`VisaTimeoutException` with
-  the matching `VisaStatus`, keeping `NativeError`, `BytesTransferred` and the original exception as
+  the matching `VisaStatus` (both defined in `VisaCs`, under `src/VisaCs/Errors/`), keeping `NativeError`, `BytesTransferred` and the original exception as
   `InnerException`. Each library's mapping is one internal file under `src/VisaCs/Internal/` (for example
   `SerialErrorMapping.cs`). The VISA library's behavior and status codes don't change.
 - **Timeouts.** An `int timeoutMilliseconds` parameter means: negative (`Timeout.Infinite`) = no limit; 0 = don't

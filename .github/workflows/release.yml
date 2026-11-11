@@ -47,6 +47,9 @@ jobs:
       - name: Test
         run: dotnet test tests/VisaCs.Tests -c Release --no-build
 
+      - name: Test VisaCs.Lan
+        run: dotnet test tests/VisaCs.Lan.Tests -c Release --no-build
+
       - name: Pack
         run: dotnet pack VisaCs.slnx -c Release --no-build -o artifacts
 

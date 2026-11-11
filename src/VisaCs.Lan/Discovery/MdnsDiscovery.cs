@@ -42,19 +42,37 @@ public static class MdnsDiscovery
 
     /// <summary>
     /// Sends one query for the given service types (see <see cref="MdnsServiceTypes"/>) and collects the answers for
-    /// <paramref name="timeoutMilliseconds"/> milliseconds (negative: until cancelled; 0: only answers already
-    /// received). <paramref name="target"/> overrides the multicast destination (for
-    /// example a unicast responder in a test).
+    /// <paramref name="timeoutMilliseconds"/> milliseconds (0: only answers already received).
+    /// <paramref name="target"/> overrides the multicast destination (for example a unicast responder in a test).
     /// </summary>
-    public static IReadOnlyList<MdnsServiceInstance> Browse(IReadOnlyList<string> serviceTypes, int timeoutMilliseconds, IPEndPoint? target = null) =>
-        AsyncIO.Complete(BrowseAsync(serviceTypes, timeoutMilliseconds, target, CancellationToken.None, async: false));
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="timeoutMilliseconds"/> is negative: the timeout is
+    /// how long to listen, so it cannot be unlimited here.</exception>
+    public static IReadOnlyList<MdnsServiceInstance> Browse(IReadOnlyList<string> serviceTypes, int timeoutMilliseconds, IPEndPoint? target = null)
+    {
+        ArgumentNullException.ThrowIfNull(serviceTypes);
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMilliseconds);
+        return AsyncIO.Complete(BrowseAsync(serviceTypes, timeoutMilliseconds, target, CancellationToken.None, async: false));
+    }
 
     /// <summary>
     /// Like <see cref="Browse"/>, without holding a thread while waiting for answers. Cancelling
-    /// <paramref name="cancellationToken"/> ends the wait early with <see cref="OperationCanceledException"/>.
+    /// <paramref name="cancellationToken"/> ends the wait early with <see cref="OperationCanceledException"/>. A negative
+    /// <paramref name="timeoutMilliseconds"/> listens until the token is cancelled.
     /// </summary>
-    public static async Task<IReadOnlyList<MdnsServiceInstance>> BrowseAsync(IReadOnlyList<string> serviceTypes, int timeoutMilliseconds,
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="timeoutMilliseconds"/> is negative and
+    /// <paramref name="cancellationToken"/> cannot be cancelled.</exception>
+    public static Task<IReadOnlyList<MdnsServiceInstance>> BrowseAsync(IReadOnlyList<string> serviceTypes, int timeoutMilliseconds,
         IPEndPoint? target = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(serviceTypes);
+        if (timeoutMilliseconds < 0 && !cancellationToken.CanBeCanceled)
+            throw new ArgumentOutOfRangeException(nameof(timeoutMilliseconds), timeoutMilliseconds,
+                "A negative timeout (listen until cancelled) needs a cancellable token.");
+        return BrowseCheckedAsync(serviceTypes, timeoutMilliseconds, target, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<MdnsServiceInstance>> BrowseCheckedAsync(IReadOnlyList<string> serviceTypes, int timeoutMilliseconds,
+        IPEndPoint? target, CancellationToken cancellationToken)
     {
         var result = await BrowseAsync(serviceTypes, timeoutMilliseconds, target, cancellationToken, async: true).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();

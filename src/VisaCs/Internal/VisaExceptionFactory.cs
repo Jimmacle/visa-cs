@@ -4,7 +4,7 @@ namespace VisaCs;
 
 /// <summary>
 /// Factory helpers for <see cref="VisaException"/> used inside this library. They are static extension members, so
-/// call sites read <c>VisaException.From(ex)</c> although the exception type lives in VisaCs.Primitives.
+/// call sites read <c>VisaException.From(ex)</c> while the helpers stay internal.
 /// </summary>
 internal static class VisaExceptionFactory
 {

@@ -45,13 +45,14 @@ Console.WriteLine(Encoding.ASCII.GetString(response));
 - For devices that are not instruments, transfer on the handle directly: `usb.Open(device, interfaceNumber)`, then
   `BulkTransfer`, `InterruptTransfer` or `ControlTransfer` (and their async forms). The direction comes from bit 7
   of the endpoint address (or the request type, for control transfers).
-- `UsbTmcDevice` timeouts bound the whole call, a handle transfer's timeout bounds one transfer; for both, -1 means
-  no limit and 0 means "don't wait" (fail unless it completes at once). Timeouts throw `UsbTimeoutException`;
+- `UsbTmcDevice` timeouts bound the whole call, a handle transfer's timeout bounds one transfer; for both, a negative
+  value (`Timeout.Infinite`) means no limit and 0 means "don't wait" (fail unless it completes at once). Timeouts throw `UsbTimeoutException`;
   cancelling throws `OperationCanceledException` and cancels the transfer in the OS. Asynchronous calls hold no
   thread.
 - Failures throw `UsbException` (an `IOException`) whose `Error` names what went wrong (`NotFound`, `Busy`,
   `AccessDenied`, `Disconnected`, `Stall`, `ProtocolError`, `NotSupported`, ...) and whose `NativeError` holds the
-  OS or libusb error code. The library depends on no other package.
+  OS or libusb error code.
+- The package depends on no other package.
 - Implement `IUsbBackend` and `IUsbDeviceHandle` to plug in another driver stack; `UsbDescriptorParser` decodes
   standard descriptors.
 

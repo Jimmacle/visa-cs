@@ -90,7 +90,7 @@ public static partial class VisaFormatter
                     text.Append(FormatOne(spec, arg));
                 }
             }
-            catch (Exception ex) when (ex is InvalidCastException or OverflowException || (ex is FormatException && !FormatErrors.IsOwn(ex)))
+            catch (Exception ex) when (ex is InvalidCastException or OverflowException || ex is FormatException and not OwnFormatException)
             {
                 throw Invalid($"Argument {argIndex} cannot be formatted with '%{spec.Conversion}': {ex.Message}", ex);
             }

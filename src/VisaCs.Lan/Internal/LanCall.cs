@@ -3,7 +3,7 @@ namespace VisaCs.Internal;
 /// <summary>Turns the library's internal <see cref="Deadline"/>-based calls into the public timeout and token forms.</summary>
 internal static class LanCall
 {
-    /// <summary>The deadline of a public call: <paramref name="timeoutMilliseconds"/> (-1: no limit), ended early by the token.</summary>
+    /// <summary>The deadline of a public call: <paramref name="timeoutMilliseconds"/> (negative: no limit), ended early by the token.</summary>
     public static Deadline DeadlineFor(int timeoutMilliseconds, CancellationToken cancellationToken = default) =>
         Deadline.FromMilliseconds(timeoutMilliseconds).WithCancellation(cancellationToken);
 

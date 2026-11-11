@@ -3,20 +3,15 @@ namespace VisaCs.Formatting;
 /// <summary>The exceptions this library throws for bad data or formats, built in one place.</summary>
 internal static class FormatErrors
 {
-    // Marks the exceptions built here, so that a handler for BCL parse errors does not wrap them a second time.
-    private const string OwnKey = "VisaCs.Formatting";
-
     /// <summary>Malformed data, format or arguments.</summary>
-    public static FormatException Invalid(string message, Exception? inner = null)
-    {
-        var ex = new FormatException(message, inner);
-        ex.Data[OwnKey] = true;
-        return ex;
-    }
+    public static FormatException Invalid(string message, Exception? inner = null) => new OwnFormatException(message, inner);
 
     /// <summary>An unknown or unsupported format conversion.</summary>
     public static NotSupportedException NotSupported(string message) => new(message);
-
-    /// <summary>True if <paramref name="ex"/> was built by <see cref="Invalid"/>.</summary>
-    public static bool IsOwn(Exception ex) => ex.Data.Contains(OwnKey);
 }
+
+/// <summary>
+/// The <see cref="FormatException"/> this library throws itself. Callers see a <see cref="FormatException"/>; the type
+/// only lets the handler that wraps BCL parse errors of an argument in <c>VisaFormatter.Format</c> leave it as it is.
+/// </summary>
+internal sealed class OwnFormatException(string message, Exception? inner) : FormatException(message, inner);

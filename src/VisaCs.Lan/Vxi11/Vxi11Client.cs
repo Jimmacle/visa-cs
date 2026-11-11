@@ -78,7 +78,7 @@ public sealed class Vxi11Client : IDisposable
     /// </summary>
     /// <param name="host">Host name or IP address.</param>
     /// <param name="deviceName">The device on the host.</param>
-    /// <param name="timeoutMilliseconds">Time for the whole connection setup (-1: no limit).</param>
+    /// <param name="timeoutMilliseconds">Time for the whole connection setup (negative: no limit).</param>
     /// <param name="portmapperPort">The portmapper's port.</param>
     /// <param name="clientId">The <c>clientId</c> sent with create_link.</param>
     public static Vxi11Client Connect(string host, string deviceName, int timeoutMilliseconds, int portmapperPort = Portmapper.DefaultPort,

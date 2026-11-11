@@ -37,7 +37,8 @@ double[] trace = Ieee4882.ParseValues<double>("+1.5E+00,-2.0E-01\n");
 - `VisaFormatter.Format`/`FormatString` and `Parse`/`ParseString`; `HasBinaryConversion` tells whether a read
   format contains binary data, which must not end at a termination character.
 - Malformed data, formats or arguments throw `FormatException`; an unknown or unsupported conversion throws
-  `NotSupportedException`. The package depends on no other VisaCs package.
+  `NotSupportedException`.
+- The package depends on no other package.
 
 The `MessageBasedSession` of the `VisaCs` package uses these for `QueryBinaryValues`, `QueryAsciiValues` and
 `Printf`/`Scanf`/`Queryf`, and reports these errors as `VI_ERROR_INV_FMT` and `VI_ERROR_NSUP_FMT`. More in the

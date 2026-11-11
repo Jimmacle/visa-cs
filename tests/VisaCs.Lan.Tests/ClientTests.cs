@@ -205,4 +205,39 @@ public sealed class ClientTests(SimulatorFixture fixture) : IClassFixture<Simula
         Assert.Equal(MdnsServiceTypes.Vxi11, instance.ServiceType);
         Assert.Equal(111, instance.Port);
     }
+
+    // ------------------------------------------------------------------ Discovery timeouts
+
+    [Fact]
+    public void SynchronousDiscoveryRejectsANegativeTimeout()
+    {
+        // The timeout is a listening time; with no token, "no limit" would never return.
+        Assert.Throws<ArgumentOutOfRangeException>(() => Vxi11Discovery.Discover(-1, targets: [IPAddress.Loopback], broadcast: false));
+        Assert.Throws<ArgumentOutOfRangeException>(() => MdnsDiscovery.Browse([MdnsServiceTypes.Vxi11], -1, new IPEndPoint(IPAddress.Loopback, 9)));
+    }
+
+    [Fact]
+    public void AsynchronousDiscoveryRejectsANegativeTimeoutWithoutACancellableToken()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = Vxi11Discovery.DiscoverAsync(-1, targets: [IPAddress.Loopback], broadcast: false); });
+        Assert.Throws<ArgumentOutOfRangeException>(() => { _ = MdnsDiscovery.BrowseAsync([MdnsServiceTypes.Vxi11], -1, new IPEndPoint(IPAddress.Loopback, 9)); });
+    }
+
+    [Fact]
+    public async Task AsynchronousDiscoveryWithANegativeTimeoutListensUntilCancelled()
+    {
+        using var cts = new CancellationTokenSource(300);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            Vxi11Discovery.DiscoverAsync(-1, fixture.Simulator.Vxi11.PortmapperPort, [IPAddress.Loopback], broadcast: false, cts.Token));
+        using var cts2 = new CancellationTokenSource(300);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            MdnsDiscovery.BrowseAsync([MdnsServiceTypes.Vxi11], -1, new IPEndPoint(IPAddress.Loopback, 9), cts2.Token));
+    }
+
+    [Fact]
+    public void DiscoveryWithZeroTimeoutReturnsImmediately()
+    {
+        Assert.Empty(MdnsDiscovery.Browse([MdnsServiceTypes.Vxi11], 0, new IPEndPoint(IPAddress.Loopback, 9)));
+        _ = Vxi11Discovery.Discover(0, targets: [IPAddress.Loopback], broadcast: false);
+    }
 }

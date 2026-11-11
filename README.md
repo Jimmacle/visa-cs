@@ -81,17 +81,18 @@ The hardware access layers are separate libraries, so they can be used without t
 
 | Library | Contents | Depends on |
 |---|---|---|
-| `VisaCs` | VISA itself: `ResourceManager`, sessions (VXI-11, HiSLIP, raw socket, VICP, USBTMC, serial, GPIB, PXI), resource names, find expressions | the libraries below |
+| `VisaCs` | VISA itself: `ResourceManager`, sessions (VXI-11, HiSLIP, raw socket, VICP, USBTMC, serial, GPIB, PXI), resource names, find expressions, `VisaStatus` and the `VisaException` types | the six component libraries below |
 | `VisaCs.Serial` | `NativeSerialPort`: serial ports through the Win32 comm API or termios, without `System.IO.Ports` ([usage](docs/serial.md#without-visa)) | — |
 | `VisaCs.Usb` | `IUsbBackend` and its WinUSB, usbfs and libusb implementations: enumeration and control, bulk and interrupt transfers; `UsbTmcDevice`, a USBTMC/USB488 client ([usage](docs/usb.md#without-visa)) | — |
 | `VisaCs.Gpib` | `Ni488Driver`: GPIB through any NI-488.2 compatible library, bound at run time ([usage](docs/gpib.md#without-visa)) | — |
 | `VisaCs.Formatting` | `Ieee4882` (definite-length blocks, binary arrays with a byte order, ASCII value lists) and `VisaFormatter` (the VISA printf/scanf format language) ([usage](docs/using-sessions.md#without-a-session)) | — |
 | `VisaCs.Pci` | `PciDeviceInfo` and `PciRegion`: PCI(e) configuration space and memory and I/O BARs through Linux sysfs ([usage](docs/pxi.md#without-visa)) | — |
 | `VisaCs.Lan` | `Vxi11Client`, `HislipClient` (incl. TLS and SASL), `VicpClient`, ONC RPC and XDR, mDNS and VXI-11 discovery ([usage](docs/tcpip.md#without-visa)) | — |
-| `VisaCs.Primitives` | `VisaStatus` and the `VisaException` types the other libraries report errors with | |
 | `VisaCs.Simulation` | Simulated instruments and protocol servers for testing without hardware | `VisaCs`, `VisaCs.Lan` |
 
-Referencing `VisaCs` brings in the component libraries and `VisaCs.Primitives`.
+Referencing `VisaCs` brings in the six component libraries. Each component library reports errors with its own
+exception types (for example `SerialPortException`, `UsbTimeoutException`); `VisaCs` maps them to `VisaException`
+with a `VisaStatus`.
 
 ## Documentation
 
@@ -144,13 +145,13 @@ src/VisaCs/                 the VISA library
   Gpib/                     GPIB sessions
   Pxi/                      PxiSession and windows
   Discovery/                find expressions
+  Errors/                   VisaStatus, VisaException and its subclasses
 src/VisaCs.Serial/          native serial ports (Win32, termios)
 src/VisaCs.Usb/             USB backends: WinUSB, usbfs, libusb; USBTMC client
 src/VisaCs.Gpib/            NI-488.2 binding
 src/VisaCs.Pci/             PCI register access through Linux sysfs
 src/VisaCs.Formatting/      IEEE 488.2 blocks and value lists, VISA printf/scanf
 src/VisaCs.Lan/             ONC RPC, VXI-11, HiSLIP (incl. TLS and SASL), VICP, mDNS and VXI-11 discovery
-src/VisaCs.Primitives/      VisaStatus and the exception types
 src/Shared/                 internal helpers compiled into several libraries (deadlines, libc, library loading)
 src/VisaCs.Simulation/      simulated instrument, protocol servers, USB/IP exporter
 samples/VisaShell/          command-line tool

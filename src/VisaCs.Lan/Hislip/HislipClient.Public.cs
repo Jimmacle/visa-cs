@@ -44,7 +44,7 @@ public sealed partial class HislipClient
     /// <param name="host">Host name or IP address (also the name checked against the server certificate).</param>
     /// <param name="port">The HiSLIP port.</param>
     /// <param name="subAddress">The HiSLIP sub-address, e.g. <c>hislip0</c>.</param>
-    /// <param name="timeoutMilliseconds">Time for the whole connection setup (-1: no limit).</param>
+    /// <param name="timeoutMilliseconds">Time for the whole connection setup (negative: no limit).</param>
     /// <param name="security">Encryption policy and credentials; null for the defaults (encrypt only when the server requires it).</param>
     /// <param name="maximumMessageSize">The largest message this client asks the server to send, in bytes.</param>
     public static HislipClient Connect(string host, int port, string subAddress, int timeoutMilliseconds, HislipSecurityOptions? security = null,
@@ -118,7 +118,7 @@ public sealed partial class HislipClient
 
     /// <summary>
     /// Requests the exclusive lock (<paramref name="sharedLockKey"/> null or empty) or a shared lock with that key. The
-    /// server waits up to <paramref name="timeoutMilliseconds"/> (-1: no limit); a lock it cannot grant in time throws
+    /// server waits up to <paramref name="timeoutMilliseconds"/> (negative: no limit); a lock it cannot grant in time throws
     /// <see cref="LanTimeoutException"/>. A lock granted after the request was abandoned is released again.
     /// </summary>
     public void Lock(string? sharedLockKey, int timeoutMilliseconds) =>

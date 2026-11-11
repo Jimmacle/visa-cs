@@ -43,7 +43,7 @@ Console.WriteLine(Encoding.ASCII.GetString(buffer, 0, n));
   `SystemError`) and whose `NativeError` is the errno or Win32 error when known. Timeouts are
   `SerialTimeoutException`s (a `TimeoutException`) with `BytesTransferred`, cancellation
   `OperationCanceledException`, settings out of range `ArgumentOutOfRangeException`.
-- The library depends on no other package.
+- The package depends on no other package.
 
 `Read` returns whatever has arrived. Termination characters, END handling and VISA attributes are what the
 `SerialSession` of the `VisaCs` package adds. More in the

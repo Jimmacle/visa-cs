@@ -228,6 +228,10 @@ Errors are thrown as `VisaException`. `Status` holds the VISA status code (`Visa
 `VisaException.NativeError` holds the driver's or operating system's own error code when known (for example the
 NI-488.2 `iberr` of a failed GPIB call).
 
+These types are part of the `VisaCs` package. The component libraries (`VisaCs.Serial`, `VisaCs.Usb`, ...) throw
+their own exceptions (`SerialPortException`, `UsbTimeoutException`, ...) when used without VISA; through a session
+they become the matching `VisaException`, with the original as `InnerException`.
+
 After a timeout the instrument may still send the late reply. Call `Clear()` before the next command, as you
 would with any VISA.
 

@@ -39,10 +39,11 @@ uint status = bar0.Read32(0x14);
   and 32-bit accesses only, as Linux does. Configuration space is opened for writing only at the first write.
 - Every access is checked for width, alignment and bounds and throws `ArgumentOutOfRangeException` when invalid.
 - Device and operating-system failures throw `PciException` (an `IOException`) with a `PciError`:
-  `AccessDenied`, `NotFound`, `MapFailed`, `BarNotImplemented`, `BusError` or `IOError`.
+  `AccessDenied`, `NotFound`, `MapFailed`, `BarNotImplemented`, `BusError` or `IOError`, and `NativeError` (the
+  errno) when known.
 - Accesses may run on several threads. Disposing a region lets running accesses finish; later ones throw
   `ObjectDisposedException`.
-- The package depends on no other VisaCs package.
+- The package depends on no other package.
 - `OpenBar` does not check `IsAvailableToUserSpace`: writing to a function that a kernel driver owns can disturb
   that driver.
 

@@ -46,7 +46,7 @@ if (reply.Error != Vxi11Error.None) throw Vxi11Errors.ToException(reply.Error, "
 ```
 
 - Every operation has a synchronous form and an asynchronous one that holds no thread while it waits.
-- The package depends on no other VisaCs package; every type is in `VisaCs.Lan` (ONC RPC in `VisaCs.Lan.Rpc`).
+- The package depends on no other package; every type is in `VisaCs.Lan` (ONC RPC in `VisaCs.Lan.Rpc`).
 - `timeoutMilliseconds` bounds the call: negative (`Timeout.Infinite`) waits without limit, 0 does not wait. A
   timeout throws `LanTimeoutException` (a `TimeoutException`, with `BytesTransferred`), and cancelling the token
   `OperationCanceledException`. Cancelling a VXI-11 call also sends `device_abort`.

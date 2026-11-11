@@ -50,6 +50,7 @@ byte stb = dmm.SerialPoll(timeoutMilliseconds: 1000);
   `GpibTimeoutException` with `BytesTransferred`. A negative timeout waits without limit; 0 uses the shortest
   NI-488.2 timeout (10 µs), and other values round up to the next NI-488.2 step (10 ms, 30 ms, ... 1000 s).
 - Implement `IGpibDriver` for another driver or a simulation.
+- The package depends on no other package.
 
 More in the [GPIB guide](https://github.com/Jimmacle/visa-cs/blob/main/docs/gpib.md#without-visa). No real GPIB
 board has been tested yet; the binding is tested against a stand-in NI-488.2 library.

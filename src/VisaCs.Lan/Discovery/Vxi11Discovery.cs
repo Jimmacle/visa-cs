@@ -14,21 +14,37 @@ public static class Vxi11Discovery
     /// <summary>
     /// Sends the query and collects the addresses that answer for <paramref name="timeoutMilliseconds"/> milliseconds.
     /// </summary>
-    /// <param name="timeoutMilliseconds">How long to listen for answers (negative: until cancelled; 0: only answers
-    /// already received).</param>
+    /// <param name="timeoutMilliseconds">How long to listen for answers (0: only answers already received).</param>
     /// <param name="portmapperPort">The portmapper port to query.</param>
     /// <param name="targets">Addresses queried directly (unicast), in addition to the broadcast; may be null.</param>
     /// <param name="broadcast">Whether to broadcast the query on every IPv4 interface.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="timeoutMilliseconds"/> is negative: the timeout is
+    /// how long to listen, so it cannot be unlimited here.</exception>
     public static IReadOnlyList<IPAddress> Discover(int timeoutMilliseconds, int portmapperPort = Portmapper.DefaultPort, IEnumerable<IPAddress>? targets = null,
-        bool broadcast = true) =>
-        AsyncIO.Complete(DiscoverAsync(timeoutMilliseconds, portmapperPort, targets, broadcast, CancellationToken.None, async: false));
+        bool broadcast = true)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMilliseconds);
+        return AsyncIO.Complete(DiscoverAsync(timeoutMilliseconds, portmapperPort, targets, broadcast, CancellationToken.None, async: false));
+    }
 
     /// <summary>
     /// Like <see cref="Discover"/>, without holding a thread while waiting for answers. Cancelling
-    /// <paramref name="cancellationToken"/> ends the wait early with <see cref="OperationCanceledException"/>.
+    /// <paramref name="cancellationToken"/> ends the wait early with <see cref="OperationCanceledException"/>. A negative
+    /// <paramref name="timeoutMilliseconds"/> listens until the token is cancelled.
     /// </summary>
-    public static async Task<IReadOnlyList<IPAddress>> DiscoverAsync(int timeoutMilliseconds, int portmapperPort = Portmapper.DefaultPort,
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="timeoutMilliseconds"/> is negative and
+    /// <paramref name="cancellationToken"/> cannot be cancelled.</exception>
+    public static Task<IReadOnlyList<IPAddress>> DiscoverAsync(int timeoutMilliseconds, int portmapperPort = Portmapper.DefaultPort,
         IEnumerable<IPAddress>? targets = null, bool broadcast = true, CancellationToken cancellationToken = default)
+    {
+        if (timeoutMilliseconds < 0 && !cancellationToken.CanBeCanceled)
+            throw new ArgumentOutOfRangeException(nameof(timeoutMilliseconds), timeoutMilliseconds,
+                "A negative timeout (listen until cancelled) needs a cancellable token.");
+        return DiscoverCheckedAsync(timeoutMilliseconds, portmapperPort, targets, broadcast, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<IPAddress>> DiscoverCheckedAsync(int timeoutMilliseconds, int portmapperPort,
+        IEnumerable<IPAddress>? targets, bool broadcast, CancellationToken cancellationToken)
     {
         var result = await DiscoverAsync(timeoutMilliseconds, portmapperPort, targets, broadcast, cancellationToken, async: true).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
