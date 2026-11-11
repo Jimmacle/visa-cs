@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Runtime.Versioning;
+using VisaCs.Pci;
 
 namespace VisaCs;
 
@@ -63,9 +65,53 @@ public sealed class PciDeviceInfo
 
     /// <summary>
     /// True if user space may own the function: no driver is bound, or a driver meant for user-space access
-    /// (uio_pci_generic, vfio-pci, pci-stub). Only such functions can be opened as <see cref="PxiSession"/>.
+    /// (uio_pci_generic, vfio-pci, pci-stub). Only such functions can be opened as a VISA PxiSession.
     /// </summary>
     public bool IsAvailableToUserSpace => Driver is null or "uio_pci_generic" or "vfio-pci" or "pci-stub";
+
+    /// <summary>
+    /// Reads one function by its Linux PCI address (e.g. <c>0000:03:12.0</c>) from a sysfs devices directory; null when
+    /// it does not exist.
+    /// </summary>
+    public static PciDeviceInfo? FromAddress(string address, string root = "/sys/bus/pci/devices")
+    {
+        string path = System.IO.Path.Combine(root, address);
+        return Directory.Exists(path) ? Read(path) : null;
+    }
+
+    /// <summary>
+    /// Opens the configuration space (the sysfs <c>config</c> file). It is opened for writing only at the first write,
+    /// so reads need no privileges; beyond the first 64 bytes they need root, as writes do.
+    /// </summary>
+    /// <exception cref="VisaException"><see cref="VisaStatus.ErrorNoPermission"/> or <see cref="VisaStatus.ErrorResourceNotFound"/>.</exception>
+    [SupportedOSPlatform("linux")]
+    public PciRegion OpenConfigurationSpace() => new PciFileRegion(System.IO.Path.Combine(Path, "config"), 0, isConfig: true);
+
+    /// <summary>
+    /// Opens a BAR (the sysfs <c>resourceN</c> file): memory BARs are mapped into the process, I/O BARs are accessed
+    /// with file reads and writes. Needs root or a udev rule granting access to the file. This does not check
+    /// <see cref="IsAvailableToUserSpace"/>: writing to a function a kernel driver owns can disturb that driver.
+    /// </summary>
+    /// <param name="index">The BAR number, 0 to 5.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="index"/> is not 0 to 5.</exception>
+    /// <exception cref="VisaException">
+    /// <see cref="VisaStatus.ErrorInvalidSpace"/> when the BAR is not implemented, <see cref="VisaStatus.ErrorNoPermission"/>,
+    /// <see cref="VisaStatus.ErrorResourceNotFound"/> or <see cref="VisaStatus.ErrorResourceBusy"/> when it cannot be opened.
+    /// </exception>
+    [SupportedOSPlatform("linux")]
+    public PciRegion OpenBar(int index)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(index, 5);
+        var bar = index < Bars.Count ? Bars[index] : new PciBar(index, PciBarType.None, 0, 0, false, false);
+        string file = System.IO.Path.Combine(Path, $"resource{index}");
+        return bar.Type switch
+        {
+            PciBarType.Memory => new PciMappedRegion(file, (long)bar.Size),
+            PciBarType.IO => new PciFileRegion(file, (long)bar.Size, isConfig: false),
+            _ => throw PciAccess.BarNotImplemented(index),
+        };
+    }
 
     internal static PciDeviceInfo? Read(string directory)
     {

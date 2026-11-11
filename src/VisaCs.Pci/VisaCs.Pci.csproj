@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>VisaCs.Pci</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>User-space PCI(e) register access on Linux through sysfs: device enumeration, configuration space, and memory and I/O BARs, with no kernel driver of its own.</Description>
+    <PackageTags>pci;pcie;pxi;sysfs;fpga;linux;instrument</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
+  </ItemGroup>
+</Project>
