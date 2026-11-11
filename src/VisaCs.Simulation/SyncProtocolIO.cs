@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using VisaCs.Internal;
+using VisaCs.Lan;
 using VisaCs.Lan.Protocols;
 
 namespace VisaCs.Simulation;

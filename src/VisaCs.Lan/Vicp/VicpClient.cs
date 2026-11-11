@@ -11,8 +11,9 @@ namespace VisaCs.Lan;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Timeouts are in milliseconds; -1 waits without limit. A timeout throws <see cref="VisaTimeoutException"/>, other
-/// failures <see cref="VisaException"/>, and cancelling the token of an asynchronous call
+/// Timeouts are in milliseconds: negative (<see cref="Timeout.Infinite"/>) waits without limit, 0 does not wait
+/// (the call times out unless it can complete at once). A timeout throws <see cref="LanTimeoutException"/>, other failures
+/// <see cref="LanException"/>, and cancelling the token of an asynchronous call
 /// <see cref="OperationCanceledException"/>. Use one caller at a time.
 /// </para>
 /// <para>
@@ -227,7 +228,7 @@ public sealed class VicpClient : IDisposable
             total += n;
             if (end || total == buffer.Length) break;
         }
-        if (total == 0) throw LanErrors.IO("Empty VICP serial poll response.");
+        if (total == 0) throw LanErrors.Protocol("Empty VICP serial poll response.");
         if (total > 1 && byte.TryParse(System.Text.Encoding.ASCII.GetString(buffer, 0, total).Trim(), out byte parsed)) return parsed;
         return buffer[0];
     }

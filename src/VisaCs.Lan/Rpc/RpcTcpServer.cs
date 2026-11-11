@@ -41,7 +41,7 @@ public sealed class RpcServerConnection
 /// <summary>
 /// Handles a call to an <see cref="RpcTcpServer"/>: reads the arguments from <paramref name="arguments"/>, writes the
 /// results to <paramref name="results"/> and returns <see cref="RpcAcceptStatus.Success"/>, or returns another status
-/// (anything written is then discarded). A <see cref="VisaException"/> thrown while reading the arguments (malformed
+/// (anything written is then discarded). A <see cref="LanException"/> thrown while reading the arguments (malformed
 /// XDR) answers <see cref="RpcAcceptStatus.GarbageArguments"/>.
 /// </summary>
 public delegate RpcAcceptStatus RpcCallHandler(RpcCallContext context, XdrReader arguments, XdrWriter results);
@@ -193,7 +193,7 @@ public sealed class RpcTcpServer : IDisposable
                     {
                         status = _handler(new RpcCallContext(procedure, connection), reader, writer);
                     }
-                    catch (VisaException)
+                    catch (LanException)
                     {
                         status = RpcAcceptStatus.GarbageArguments;
                     }

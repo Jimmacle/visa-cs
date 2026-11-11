@@ -154,9 +154,10 @@ public static class Vxi11Errors
     };
 
     /// <summary>
-    /// The exception for a failed <paramref name="operation"/> (e.g. "device_write"): <see cref="VisaTimeoutException"/>
-    /// for an I/O timeout, otherwise a <see cref="VisaException"/> with the matching VISA status.
+    /// The exception for a failed <paramref name="operation"/> (e.g. "device_write"): <see cref="LanTimeoutException"/>
+    /// for <see cref="Vxi11Error.IOTimeout"/> (with a <see cref="Vxi11Exception"/> as inner exception), otherwise a
+    /// <see cref="Vxi11Exception"/> carrying <paramref name="error"/>.
     /// </summary>
-    public static VisaException ToException(Vxi11Error error, string operation) =>
+    public static Exception ToException(Vxi11Error error, string operation) =>
         LanErrors.Vxi11(error, $"VXI-11 {operation} failed: {Describe(error)} ({(int)error}).");
 }

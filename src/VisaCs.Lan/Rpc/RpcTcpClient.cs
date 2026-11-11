@@ -11,17 +11,17 @@ namespace VisaCs.Lan.Rpc;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Timeouts are in milliseconds; -1 waits without limit. A timeout throws <see cref="VisaTimeoutException"/>, other
-/// failures <see cref="VisaException"/>, and cancelling the token of an asynchronous call
-/// <see cref="OperationCanceledException"/>. RPC-level rejections map to VI_ERROR_RSRC_NFOUND (program unavailable or
-/// version mismatch), VI_ERROR_NSUP_OPER (procedure unavailable), VI_ERROR_INV_PARAMETER (garbage arguments) and
-/// VI_ERROR_IO.
+/// Timeouts are in milliseconds: negative (<see cref="Timeout.Infinite"/>) waits without limit, 0 does not wait
+/// (the call times out unless it can complete at once). A timeout throws <see cref="LanTimeoutException"/>, other failures
+/// <see cref="LanException"/>, and cancelling the token of an asynchronous call <see cref="OperationCanceledException"/>.
+/// A call the server does not accept throws <see cref="RpcException"/> with its <see cref="RpcAcceptStatus"/>; a
+/// rejected call (RPC version mismatch, authentication) and malformed replies throw <see cref="LanError.ProtocolError"/>.
 /// </para>
 /// <para>
 /// A call that times out while waiting for its reply leaves the connection usable: the late reply is recognized by
 /// its xid and discarded. A call whose request was only partly sent, or a malformed record, closes the connection,
 /// because the server would otherwise read the next request as the rest of the broken one; later calls then fail
-/// with VI_ERROR_CONN_LOST.
+/// with <see cref="LanError.ConnectionLost"/>.
 /// </para>
 /// </remarks>
 public sealed class RpcTcpClient : IDisposable
@@ -116,10 +116,10 @@ public sealed class RpcTcpClient : IDisposable
             {
                 await NetUtil.SendAllAsync(_socket, _writer.Buffer.AsMemory(0, _writer.Length), deadline, async).ConfigureAwait(false);
             }
-            catch (VisaException ex) when (NetUtil.MayHaveSentPart(ex))
+            catch (Exception ex) when (LanErrors.IsLanError(ex) && NetUtil.MayHaveSentPart(ex))
             {
                 Close("a request was only partly sent");
-                if (ex is not VisaTimeoutException timeout) throw;
+                if (ex is not LanTimeoutException timeout) throw;
                 throw LanErrors.Timeout("The RPC request was only partly sent before the timeout; the connection was closed.", ex,
                     timeout.BytesTransferred);
             }
@@ -152,7 +152,7 @@ public sealed class RpcTcpClient : IDisposable
         if (_closed) throw LanErrors.ConnectionLost(ClosedMessage);
     }
 
-    /// <summary>Closes the connection; later calls fail with VI_ERROR_CONN_LOST giving <paramref name="reason"/>.</summary>
+    /// <summary>Closes the connection; later calls fail with <see cref="LanError.ConnectionLost"/> giving <paramref name="reason"/>.</summary>
     private void Close(string? reason)
     {
         if (reason is not null) _closedReason ??= reason;
@@ -185,7 +185,7 @@ public sealed class RpcTcpClient : IDisposable
                 if (total > OncRpc.MaxRecordSize)
                 {
                     Close("the server sent an oversized RPC record");
-                    throw LanErrors.IO("RPC record too large; the connection was closed.");
+                    throw LanErrors.Protocol("RPC record too large; the connection was closed.");
                 }
                 if (_receive.Length < total)
                     Array.Resize(ref _receive, (int)Math.Max(_receive.Length * 2L, total));

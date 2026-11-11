@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using VisaCs.Lan;
 using VisaCs.Lan.Rpc;
 using VisaCs.Simulation;
 
@@ -60,10 +61,10 @@ public sealed class ProtocolRobustnessTests(HislipSecurityFixture certificates)
         Exception? ex = null;
         for (int i = 0; i < 64 && ex?.Message.Contains("partly sent") != true; i++)
             ex = await Record.ExceptionAsync(async () => await client.CallAsync(11, w => w.WriteOpaque(data), 300));
-        Assert.IsType<VisaTimeoutException>(ex);
+        Assert.IsType<LanTimeoutException>(ex);
         Assert.Contains("partly sent", ex.Message);
-        var next = await Assert.ThrowsAsync<VisaException>(async () => await client.CallAsync(13, null, 500));
-        Assert.Equal(VisaStatus.ErrorConnectionLost, next.Status);
+        var next = await Assert.ThrowsAsync<LanException>(async () => await client.CallAsync(13, null, 500));
+        Assert.Equal(LanError.ConnectionLost, next.Error);
     }
 
     // ------------------------------------------------------------------ HiSLIP TLS switch and locks
@@ -226,7 +227,7 @@ public sealed class ProtocolRobustnessTests(HislipSecurityFixture certificates)
         var data = new byte[16];
         BinaryPrimitives.WriteUInt32BigEndian(data, 0x7FFFFFFE);
         var reader = new XdrReader(data, 0, data.Length);
-        Assert.Equal(VisaStatus.ErrorIO, Assert.Throws<VisaException>(() => reader.ReadOpaque()).Status);
+        Assert.Equal(LanError.ProtocolError, Assert.Throws<LanException>(() => reader.ReadOpaque()).Error);
     }
 
     /// <summary>

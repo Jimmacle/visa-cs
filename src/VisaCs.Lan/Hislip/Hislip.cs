@@ -85,7 +85,7 @@ internal static class Hislip
     public static HislipHeader ParseHeader(ReadOnlySpan<byte> source)
     {
         if (source[0] != 'H' || source[1] != 'S')
-            throw LanErrors.IO("HiSLIP protocol error: invalid message prologue.");
+            throw LanErrors.Protocol("HiSLIP protocol error: invalid message prologue.");
         return new HislipHeader((HislipMessageType)source[2], source[3],
             BinaryPrimitives.ReadUInt32BigEndian(source[4..]),
             BinaryPrimitives.ReadUInt64BigEndian(source[8..]));
@@ -122,7 +122,7 @@ internal static class Hislip
             {
                 await channel.SendAsync(payload, deadline, async).ConfigureAwait(false);
             }
-            catch (VisaTimeoutException ex)
+            catch (LanTimeoutException ex)
             {
                 // The header is out: whatever happened to the payload, the server is inside this message.
                 throw NetUtil.PartialSendTimeout("The send timed out after the message header.", ex, HeaderSize + ex.BytesTransferred);
@@ -141,7 +141,7 @@ internal static class Hislip
         if (header.PayloadLength > MaxControlPayload)
         {
             if (!skipIfTooLarge)
-                throw LanErrors.IO($"HiSLIP protocol error: unexpected payload of {header.PayloadLength} bytes in {header.Type}.");
+                throw LanErrors.Protocol($"HiSLIP protocol error: unexpected payload of {header.PayloadLength} bytes in {header.Type}.");
             await channel.SkipAsync((long)Math.Min(header.PayloadLength, long.MaxValue), deadline, async).ConfigureAwait(false);
             return [];
         }
@@ -197,15 +197,15 @@ internal static class Hislip
     };
 
     /// <summary>The exception for a FatalError message (the server closes the connection after sending one).</summary>
-    public static VisaException FatalErrorException(HislipMessage message)
+    public static LanException FatalErrorException(HislipMessage message)
     {
         string text = $"HiSLIP fatal error: {DescribeFatalError(message.Control)} {message.PayloadText}".Trim();
         return message.Control == 5
-            ? LanErrors.Security(SecurityFailure.Policy, text)
+            ? LanErrors.Security(LanSecurityFailure.Policy, text)
             : LanErrors.ConnectionLost(text);
     }
 
     /// <summary>The exception for an Error message.</summary>
-    public static VisaException ErrorException(HislipMessage message, string? context = null) =>
-        LanErrors.IO($"HiSLIP error{(context is null ? "" : " " + context)}: {DescribeError(message.Control)} {message.PayloadText}".Trim());
+    public static LanException ErrorException(HislipMessage message, string? context = null) =>
+        LanErrors.ServerError($"HiSLIP error{(context is null ? "" : " " + context)}: {DescribeError(message.Control)} {message.PayloadText}".Trim());
 }

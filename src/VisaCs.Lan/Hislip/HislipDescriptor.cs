@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace VisaCs;
+namespace VisaCs.Lan;
 
 /// <summary>Types of HiSLIP 2.0 descriptors (GetDescriptors).</summary>
 public enum HislipDescriptorType : byte

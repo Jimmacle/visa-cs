@@ -16,9 +16,10 @@ namespace VisaCs.Lan;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Timeouts are in milliseconds; -1 waits without limit. A timeout throws <see cref="VisaTimeoutException"/>, other
-/// failures <see cref="VisaException"/> (<see cref="VisaSecurityException"/> for TLS and authentication), and
-/// cancelling the token of an asynchronous call <see cref="OperationCanceledException"/>.
+/// Timeouts are in milliseconds: negative (<see cref="Timeout.Infinite"/>) waits without limit, 0 does not wait
+/// (the call times out unless it can complete at once). A timeout throws <see cref="LanTimeoutException"/>, other failures <see cref="LanException"/>
+/// (<see cref="LanSecurityException"/> for TLS and authentication), and cancelling the token of an asynchronous call
+/// <see cref="OperationCanceledException"/>.
 /// </para>
 /// <para>
 /// Data I/O (<see cref="Write"/>, <see cref="Read"/>, <see cref="Trigger"/>, <see cref="DeviceClear"/> and the
@@ -33,7 +34,8 @@ namespace VisaCs.Lan;
 /// </para>
 /// <para>
 /// The connection closes itself when the protocol state becomes unknown: a message only partly sent, a fatal error,
-/// a failed or timed-out TLS switch, or failed authentication. Later calls then throw VI_ERROR_CONN_LOST.
+/// a failed or timed-out TLS switch, or failed authentication. Later calls then throw <see cref="LanException"/> with
+/// <see cref="LanError.ConnectionLost"/>.
 /// </para>
 /// </remarks>
 public sealed partial class HislipClient : IDisposable
@@ -116,7 +118,7 @@ public sealed partial class HislipClient : IDisposable
 
     /// <summary>
     /// True once the connection has closed itself (a message only partly sent, a fatal error, a failed TLS switch or
-    /// authentication) or was disposed; calls then throw VI_ERROR_CONN_LOST.
+    /// authentication) or was disposed; calls then throw <see cref="LanError.ConnectionLost"/>.
     /// </summary>
     public bool IsClosed => _closed;
 
@@ -177,10 +179,10 @@ public sealed partial class HislipClient : IDisposable
                 Encoding.ASCII.GetBytes(subAddress), deadline, async).ConfigureAwait(false);
             var response = await Hislip.ReceiveAsync(sync, deadline, async).ConfigureAwait(false);
             if (response.Type == HislipMessageType.FatalError)
-                throw LanErrors.NotFound(
+                throw LanErrors.DeviceNotFound(
                     $"HiSLIP server refused the connection: {Hislip.DescribeFatalError(response.Control)} {response.PayloadText}".Trim());
             if (response.Type != HislipMessageType.InitializeResponse)
-                throw LanErrors.IO($"HiSLIP protocol error: expected InitializeResponse, got {response.Type}.");
+                throw LanErrors.Protocol($"HiSLIP protocol error: expected InitializeResponse, got {response.Type}.");
 
             ushort negotiated = (ushort)(response.Parameter >> 16);
             ushort sessionId = (ushort)(response.Parameter & 0xFFFF);
@@ -192,10 +194,10 @@ public sealed partial class HislipClient : IDisposable
                 .ConfigureAwait(false);
             var asyncResponse = await Hislip.ReceiveAsync(asyncChannel, deadline, async).ConfigureAwait(false);
             if (asyncResponse.Type == HislipMessageType.FatalError)
-                throw LanErrors.NotFound(
+                throw LanErrors.DeviceNotFound(
                     $"HiSLIP server refused the async channel: {Hislip.DescribeFatalError(asyncResponse.Control)} {asyncResponse.PayloadText}".Trim());
             if (asyncResponse.Type != HislipMessageType.AsyncInitializeResponse)
-                throw LanErrors.IO($"HiSLIP protocol error: expected AsyncInitializeResponse, got {asyncResponse.Type}.");
+                throw LanErrors.Protocol($"HiSLIP protocol error: expected AsyncInitializeResponse, got {asyncResponse.Type}.");
 
             var connection = new HislipClient(sync, asyncChannel, host)
             {
@@ -236,7 +238,8 @@ public sealed partial class HislipClient : IDisposable
         {
             await SetMaximumMessageSizeCoreAsync(size, deadline, async).ConfigureAwait(false);
         }
-        catch (VisaException ex) when (!_closed && !deadline.IsCanceled && (ex.Status == VisaStatus.ErrorIO || ex is VisaTimeoutException))
+        catch (Exception ex) when (!_closed && !deadline.IsCanceled &&
+            (ex is LanTimeoutException or LanException { Error: LanError.ServerError or LanError.ProtocolError }))
         {
             // Some servers do not implement AsyncMaximumMessageSize (they answer with an Error, or not at all):
             // keep the unlimited default.
@@ -270,7 +273,7 @@ public sealed partial class HislipClient : IDisposable
     }
 
     /// <summary>The exception for a FatalError message; the connection is closed (the server closes it too).</summary>
-    private VisaException Fatal(HislipMessage message)
+    private LanException Fatal(HislipMessage message)
     {
         var exception = Hislip.FatalErrorException(message);
         Fail("the server sent a fatal error");
@@ -291,7 +294,7 @@ public sealed partial class HislipClient : IDisposable
         catch (Exception ex) when (NetUtil.MayHaveSentPart(ex) || channel is TlsHislipChannel { IsBroken: true })
         {
             Fail($"a {type} message was only partly sent");
-            if (ex is VisaTimeoutException timeout)
+            if (ex is LanTimeoutException timeout)
                 throw LanErrors.Timeout("The send timed out after part of a HiSLIP message was sent; the connection was closed.", ex,
                     timeout.BytesTransferred);
             throw;
@@ -575,7 +578,7 @@ public sealed partial class HislipClient : IDisposable
                     case HislipMessageType.Data:
                     case HislipMessageType.DataEnd:
                         if (h.PayloadLength > long.MaxValue)
-                            throw LanErrors.IO("HiSLIP protocol error: invalid payload length.");
+                            throw LanErrors.Protocol("HiSLIP protocol error: invalid payload length.");
                         _payloadRemaining = (long)h.PayloadLength;
                         _payloadIsEnd = h.Type == HislipMessageType.DataEnd;
                         _payloadMessageId = h.Parameter;

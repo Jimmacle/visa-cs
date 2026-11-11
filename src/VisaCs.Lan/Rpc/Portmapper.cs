@@ -22,7 +22,7 @@ public static class Portmapper
 
     /// <summary>
     /// Asks the portmapper of <paramref name="host"/> for the TCP port of <paramref name="program"/>. Throws
-    /// <see cref="VisaException"/> (VI_ERROR_RSRC_NFOUND) when the program is not registered.
+    /// <see cref="LanException"/> with <see cref="LanError.DeviceNotFound"/> when the program is not registered.
     /// </summary>
     public static int GetPort(string host, uint program, uint version, int timeoutMilliseconds, int portmapperPort = DefaultPort) =>
         AsyncIO.Complete(GetPortAsync(host, program, version, portmapperPort, Deadline.FromMilliseconds(timeoutMilliseconds), async: false));
@@ -55,7 +55,7 @@ public static class Portmapper
         }, deadline, async).ConfigureAwait(false);
         uint port = reader.ReadUInt32();
         if (port == 0 || port > 65535)
-            throw LanErrors.NotFound($"RPC program 0x{program:X} is not registered on {host}.");
+            throw LanErrors.DeviceNotFound($"RPC program 0x{program:X} is not registered on {host}.");
         return (int)port;
     }
 

@@ -19,6 +19,33 @@ public enum RpcAcceptStatus : uint
     SystemError = 5,
 }
 
+/// <summary>An ONC RPC server did not accept a call (<see cref="AcceptStatus"/> is not <see cref="RpcAcceptStatus.Success"/>).</summary>
+public sealed class RpcException : LanException
+{
+    /// <summary>Creates the exception; <see cref="LanException.Error"/> is derived from <paramref name="acceptStatus"/>.</summary>
+    public RpcException(RpcAcceptStatus acceptStatus, string? message = null, Exception? innerException = null)
+        : base(ErrorFor(acceptStatus), message ?? $"RPC call not accepted ({acceptStatus}).", innerException)
+    {
+        AcceptStatus = acceptStatus;
+    }
+
+    /// <summary>The accept status of the reply.</summary>
+    public RpcAcceptStatus AcceptStatus { get; }
+
+    /// <summary>
+    /// The <see cref="LanError"/> that matches an accept status: <see cref="LanError.DeviceNotFound"/> for an unavailable
+    /// program or version, <see cref="LanError.NotSupported"/> for an unavailable procedure,
+    /// <see cref="LanError.InvalidRequest"/> for undecodable arguments, else <see cref="LanError.ServerError"/>.
+    /// </summary>
+    public static LanError ErrorFor(RpcAcceptStatus acceptStatus) => acceptStatus switch
+    {
+        RpcAcceptStatus.ProgramUnavailable or RpcAcceptStatus.ProgramMismatch => LanError.DeviceNotFound,
+        RpcAcceptStatus.ProcedureUnavailable => LanError.NotSupported,
+        RpcAcceptStatus.GarbageArguments => LanError.InvalidRequest,
+        _ => LanError.ServerError,
+    };
+}
+
 /// <summary>ONC RPC v2 (RFC 5531) constants and message headers, for code that builds its own RPC messages (UDP, for example).</summary>
 public static class OncRpc
 {
@@ -75,12 +102,12 @@ public static class OncRpc
         uint xid = r.ReadUInt32();
         if (xid != expectedXid) return null;
         if (r.ReadUInt32() != ReplyMessage)
-            throw LanErrors.IO("RPC: expected a reply message.");
+            throw LanErrors.Protocol("RPC: expected a reply message.");
         uint replyStatus = r.ReadUInt32();
         if (replyStatus == MsgDenied)
         {
             uint rejectStatus = r.ReadUInt32();
-            throw LanErrors.IO(rejectStatus == 0 ? "RPC call rejected: RPC version mismatch." : "RPC call rejected: authentication error.");
+            throw LanErrors.Protocol(rejectStatus == 0 ? "RPC call rejected: RPC version mismatch." : "RPC call rejected: authentication error.");
         }
         r.ReadUInt32();     // verifier flavor
         r.ReadOpaqueSpan(); // verifier body
@@ -88,11 +115,11 @@ public static class OncRpc
         return acceptStatus switch
         {
             RpcAcceptStatus.Success => r,
-            RpcAcceptStatus.ProgramUnavailable => throw LanErrors.NotFound("RPC program unavailable."),
-            RpcAcceptStatus.ProgramMismatch => throw LanErrors.NotFound("RPC program version mismatch."),
-            RpcAcceptStatus.ProcedureUnavailable => throw LanErrors.NotSupported("RPC procedure unavailable."),
-            RpcAcceptStatus.GarbageArguments => throw LanErrors.InvalidParameter("RPC server could not decode the arguments."),
-            _ => throw LanErrors.IO($"RPC system error (accept status {(uint)acceptStatus})."),
+            RpcAcceptStatus.ProgramUnavailable => throw LanErrors.Rpc(acceptStatus, "RPC program unavailable."),
+            RpcAcceptStatus.ProgramMismatch => throw LanErrors.Rpc(acceptStatus, "RPC program version mismatch."),
+            RpcAcceptStatus.ProcedureUnavailable => throw LanErrors.Rpc(acceptStatus, "RPC procedure unavailable."),
+            RpcAcceptStatus.GarbageArguments => throw LanErrors.Rpc(acceptStatus, "RPC server could not decode the arguments."),
+            _ => throw LanErrors.Rpc(acceptStatus, $"RPC system error (accept status {(uint)acceptStatus})."),
         };
     }
 

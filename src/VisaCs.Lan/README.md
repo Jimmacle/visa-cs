@@ -11,6 +11,7 @@ broadcast.
 | `VicpClient` | A VICP connection: blocks with EOI, serial poll, device clear, remote/lockout, in-band service requests |
 | `RpcTcpClient`, `RpcTcpServer`, `XdrWriter`, `XdrReader`, `Portmapper` | ONC RPC over TCP (namespace `VisaCs.Lan.Rpc`) |
 | `MdnsDiscovery`, `Vxi11Discovery` | Find instruments on the LAN |
+| `LanException`, `LanTimeoutException`, `LanSecurityException`, `Vxi11Exception`, `RpcException` | Errors |
 
 ## Install
 
@@ -45,10 +46,18 @@ if (reply.Error != Vxi11Error.None) throw Vxi11Errors.ToException(reply.Error, "
 ```
 
 - Every operation has a synchronous form and an asynchronous one that holds no thread while it waits.
-- `timeoutMilliseconds` bounds the call; -1 waits without limit. A timeout throws `VisaTimeoutException` (from
-  `VisaCs.Primitives`), other failures `VisaException`, and cancelling the token `OperationCanceledException`.
-  Cancelling a VXI-11 call also sends `device_abort`.
-- VXI-11 calls return the device's error code (`Vxi11Error`) instead of throwing it.
+- The package depends on no other VisaCs package; every type is in `VisaCs.Lan` (ONC RPC in `VisaCs.Lan.Rpc`).
+- `timeoutMilliseconds` bounds the call: negative (`Timeout.Infinite`) waits without limit, 0 does not wait. A
+  timeout throws `LanTimeoutException` (a `TimeoutException`, with `BytesTransferred`), and cancelling the token
+  `OperationCanceledException`. Cancelling a VXI-11 call also sends `device_abort`.
+- Other failures throw `LanException` (an `IOException`) whose `Error` (`LanError`) names the cause:
+  `ConnectionLost`, `HostNotFound`, `ConnectionRefused`, `DeviceNotFound`, `ProtocolError`, `ServerError`,
+  `NotSupported`, `InvalidRequest`, `Locked`, `NotLocked`, `Busy`, `Aborted`, `OutOfResources`, `Security`,
+  `SystemError`. `NativeError` holds the socket error code when known. Subclasses: `LanSecurityException`
+  (HiSLIP TLS and SASL, with `Failure`), `Vxi11Exception` (with the VXI-11 `Code`) and `RpcException` (with the
+  RPC `AcceptStatus`).
+- VXI-11 calls return the device's error code (`Vxi11Error`) instead of throwing it; `Vxi11Errors.ToException`
+  makes it an exception.
 - Use one caller at a time for a connection's data I/O.
 
 More in the [TCP/IP guide](https://github.com/Jimmacle/visa-cs/blob/main/docs/tcpip.md#without-visa).

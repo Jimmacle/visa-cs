@@ -5,9 +5,6 @@
     <PackageTags>vxi11;hislip;vicp;onc-rpc;mdns;lxi;scpi;instrument</PackageTags>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
-  </ItemGroup>
-  <ItemGroup>
     <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
     <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
     <Compile Include="..\Shared\ChangeSignal.cs" Link="Internal\ChangeSignal.cs" />

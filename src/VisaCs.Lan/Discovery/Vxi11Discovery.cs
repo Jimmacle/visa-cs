@@ -12,29 +12,30 @@ namespace VisaCs.Lan;
 public static class Vxi11Discovery
 {
     /// <summary>
-    /// Sends the query and collects the addresses that answer for <paramref name="timeoutMs"/> milliseconds.
+    /// Sends the query and collects the addresses that answer for <paramref name="timeoutMilliseconds"/> milliseconds.
     /// </summary>
-    /// <param name="timeoutMs">How long to listen for answers.</param>
+    /// <param name="timeoutMilliseconds">How long to listen for answers (negative: until cancelled; 0: only answers
+    /// already received).</param>
     /// <param name="portmapperPort">The portmapper port to query.</param>
     /// <param name="targets">Addresses queried directly (unicast), in addition to the broadcast; may be null.</param>
     /// <param name="broadcast">Whether to broadcast the query on every IPv4 interface.</param>
-    public static IReadOnlyList<IPAddress> Discover(int timeoutMs, int portmapperPort = Portmapper.DefaultPort, IEnumerable<IPAddress>? targets = null,
+    public static IReadOnlyList<IPAddress> Discover(int timeoutMilliseconds, int portmapperPort = Portmapper.DefaultPort, IEnumerable<IPAddress>? targets = null,
         bool broadcast = true) =>
-        AsyncIO.Complete(DiscoverAsync(timeoutMs, portmapperPort, targets, broadcast, CancellationToken.None, async: false));
+        AsyncIO.Complete(DiscoverAsync(timeoutMilliseconds, portmapperPort, targets, broadcast, CancellationToken.None, async: false));
 
     /// <summary>
     /// Like <see cref="Discover"/>, without holding a thread while waiting for answers. Cancelling
     /// <paramref name="cancellationToken"/> ends the wait early with <see cref="OperationCanceledException"/>.
     /// </summary>
-    public static async Task<IReadOnlyList<IPAddress>> DiscoverAsync(int timeoutMs, int portmapperPort = Portmapper.DefaultPort,
+    public static async Task<IReadOnlyList<IPAddress>> DiscoverAsync(int timeoutMilliseconds, int portmapperPort = Portmapper.DefaultPort,
         IEnumerable<IPAddress>? targets = null, bool broadcast = true, CancellationToken cancellationToken = default)
     {
-        var result = await DiscoverAsync(timeoutMs, portmapperPort, targets, broadcast, cancellationToken, async: true).ConfigureAwait(false);
+        var result = await DiscoverAsync(timeoutMilliseconds, portmapperPort, targets, broadcast, cancellationToken, async: true).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         return result;
     }
 
-    private static async ValueTask<IReadOnlyList<IPAddress>> DiscoverAsync(int timeoutMs, int portmapperPort, IEnumerable<IPAddress>? extraTargets,
+    private static async ValueTask<IReadOnlyList<IPAddress>> DiscoverAsync(int timeoutMilliseconds, int portmapperPort, IEnumerable<IPAddress>? extraTargets,
         bool broadcast, CancellationToken cancellationToken, bool async)
     {
         var found = new List<IPAddress>();
@@ -56,7 +57,7 @@ public static class Vxi11Discovery
             catch (SocketException) { /* unreachable network */ }
         }
 
-        var deadline = Deadline.FromMilliseconds(timeoutMs).WithCancellation(cancellationToken);
+        var deadline = Deadline.FromMilliseconds(timeoutMilliseconds).WithCancellation(cancellationToken);
         using var cts = async ? deadline.CreateTokenSource() : null;
         var buffer = new byte[1500];
         while (!deadline.HasExpired)
@@ -86,7 +87,7 @@ public static class Vxi11Discovery
                 var address = NetUtil.Normalize(((IPEndPoint)from).Address);
                 if (port != 0 && !found.Contains(address)) found.Add(address);
             }
-            catch (VisaException)
+            catch (LanException)
             {
                 // Not a valid reply.
             }
