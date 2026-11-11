@@ -1,5 +1,8 @@
 # VisaCs
 
+> [!WARNING]
+> This is entirely vibe coded and I have barely reviewed the code. It's more of an experiment to see what Claude can accomplish. Assume this library is full of bugs in its current state.
+
 A VISA (Virtual Instrument Software Architecture) implementation written entirely in C#. It talks to test
 and measurement instruments directly over each protocol. You do not need NI-VISA, Keysight IO Libraries or
 any other vendor VISA, and the libraries have no third-party NuGet dependencies.
