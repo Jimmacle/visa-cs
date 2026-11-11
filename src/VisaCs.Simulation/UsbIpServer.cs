@@ -230,7 +230,7 @@ public sealed class UsbIpServer : IDisposable
                         Reply(RetSubmit, sequence, 0, outData.Length, ReadOnlySpan<byte>.Empty);
                     }
                 }
-                catch (VisaException)
+                catch (UsbException)
                 {
                     Reply(RetSubmit, sequence, -EPipe, 0, ReadOnlySpan<byte>.Empty);
                 }
@@ -244,7 +244,7 @@ public sealed class UsbIpServer : IDisposable
                     int n = _device.HandleBulkOut(outData);
                     Reply(RetSubmit, sequence, 0, n, ReadOnlySpan<byte>.Empty);
                 }
-                catch (VisaException)
+                catch (UsbException)
                 {
                     Reply(RetSubmit, sequence, -EPipe, 0, ReadOnlySpan<byte>.Empty);
                 }
@@ -263,18 +263,18 @@ public sealed class UsbIpServer : IDisposable
                 try
                 {
                     n = interrupt
-                        ? _device.TakeInterrupt(buffer, 0, urbState.Cancellation.Token)
-                        : _device.HandleBulkIn(buffer, 0, urbState.Cancellation.Token);
+                        ? _device.TakeInterrupt(buffer, Timeout.Infinite, urbState.Cancellation.Token)
+                        : _device.HandleBulkIn(buffer, Timeout.Infinite, urbState.Cancellation.Token);
                 }
                 catch (OperationCanceledException)
                 {
                     return; // unlinked: RET_UNLINK already sent
                 }
-                catch (VisaTimeoutException)
+                catch (UsbTimeoutException)
                 {
                     status = -ETimedOut;
                 }
-                catch (VisaException)
+                catch (UsbException)
                 {
                     status = -EPipe;
                 }

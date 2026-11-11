@@ -31,6 +31,9 @@ public sealed class UsbSession : UsbSessionBase
     /// <inheritdoc/>
     public override IReadOnlyCollection<EventType> SupportedEventTypes { get; } = [EventType.ServiceRequest, EventType.UsbInterrupt];
 
+    /// <summary>The USBTMC client of the interface, shared with the other sessions to it.</summary>
+    private UsbTmcDevice Tmc => SharedDevice.Tmc;
+
     private protected override bool IsPreferredInterface(UsbInterfaceInfo info) => info.IsUsbTmc;
 
     private protected override async ValueTask OnDeviceOpenedAsync(Deadline deadline, bool async)
@@ -44,7 +47,7 @@ public sealed class UsbSession : UsbSessionBase
                 ? await Tmc.ReadCapabilitiesAsync(timeout, deadline.CancellationToken).ConfigureAwait(false)
                 : Tmc.ReadCapabilities(timeout);
         }
-        catch (VisaException)
+        catch (Exception ex) when (UsbErrorMapping.IsUsbError(ex))
         {
             Capabilities = default; // the host handles the termination character
         }
@@ -57,37 +60,42 @@ public sealed class UsbSession : UsbSessionBase
     private protected override ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
     {
         var tmc = Tmc;
-        int timeout = deadline.RemainingMilliseconds;
+        int timeout = ToUsbTimeout(deadline);
         bool vendor = IOProtocol == IOProtocol.UsbTmcVendor;
+        var token = deadline.CancellationToken;
         if (async)
         {
-            return vendor
-                ? tmc.WriteVendorSpecificAsync(data, timeout, deadline.CancellationToken)
-                : tmc.WriteAsync(data, end, timeout, deadline.CancellationToken);
+            return UsbErrorMapping.RunAsync(() => vendor
+                ? tmc.WriteVendorSpecificAsync(data, timeout, token)
+                : tmc.WriteAsync(data, end, timeout, token));
         }
-        if (vendor) tmc.WriteVendorSpecific(data.Span, timeout);
-        else tmc.Write(data.Span, end, timeout);
+        UsbErrorMapping.Run(() =>
+        {
+            if (vendor) tmc.WriteVendorSpecific(data.Span, timeout);
+            else tmc.Write(data.Span, end, timeout);
+        });
         return default;
     }
 
     private protected override async ValueTask<FillResult> FillCoreAsync(Memory<byte> target, Deadline deadline, bool async)
     {
         var tmc = Tmc;
-        int timeout = deadline.RemainingMilliseconds;
+        int timeout = ToUsbTimeout(deadline);
         bool vendor = IOProtocol == IOProtocol.UsbTmcVendor;
         int term = EffectiveTermChar;
+        var token = deadline.CancellationToken;
         // The device ends a transfer at the termination character only when it says it can.
         byte? termChar = term >= 0 && Capabilities.SupportsTermChar ? (byte)term : null;
         UsbTmcReadResult result;
         if (async)
         {
-            result = vendor
-                ? await tmc.ReadVendorSpecificAsync(target, timeout, deadline.CancellationToken).ConfigureAwait(false)
-                : await tmc.ReadAsync(target, timeout, termChar, deadline.CancellationToken).ConfigureAwait(false);
+            result = await UsbErrorMapping.RunAsync(() => vendor
+                ? tmc.ReadVendorSpecificAsync(target, timeout, token)
+                : tmc.ReadAsync(target, timeout, termChar, token)).ConfigureAwait(false);
         }
         else
         {
-            result = vendor ? tmc.ReadVendorSpecific(target.Span, timeout) : tmc.Read(target.Span, timeout, termChar);
+            result = UsbErrorMapping.Run(() => vendor ? tmc.ReadVendorSpecific(target.Span, timeout) : tmc.Read(target.Span, timeout, termChar));
         }
         return new FillResult(result.Count, result.End);
     }
@@ -96,8 +104,11 @@ public sealed class UsbSession : UsbSessionBase
 
     private protected override ValueTask ClearCoreAsync(Deadline deadline, bool async)
     {
-        if (async) return Tmc.ClearAsync(deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Tmc.Clear(deadline.RemainingMilliseconds);
+        var tmc = Tmc;
+        int timeout = deadline.RemainingMilliseconds;
+        var token = deadline.CancellationToken;
+        if (async) return UsbErrorMapping.RunAsync(() => tmc.ClearAsync(timeout, token));
+        UsbErrorMapping.Run(() => tmc.Clear(timeout));
         return default;
     }
 
@@ -105,17 +116,24 @@ public sealed class UsbSession : UsbSessionBase
     {
         if (UsbProtocol != UsbProtocol.Usb488)
             throw VisaException.NotSupported("Reading the status byte of a USBTMC (non-USB488) device");
+        var tmc = Tmc;
+        // The response on the interrupt endpoint has never been waited for once the time was up.
+        int timeout = InterruptInEndpoint >= 0 ? ToUsbTimeout(deadline) : deadline.RemainingMilliseconds;
+        var token = deadline.CancellationToken;
         return async
-            ? Tmc.ReadStatusByteAsync(deadline.RemainingMilliseconds, deadline.CancellationToken)
-            : new(Tmc.ReadStatusByte(deadline.RemainingMilliseconds));
+            ? UsbErrorMapping.RunAsync(() => tmc.ReadStatusByteAsync(timeout, token))
+            : new(UsbErrorMapping.Run(() => tmc.ReadStatusByte(timeout)));
     }
 
     private protected override ValueTask TriggerCoreAsync(Deadline deadline, bool async)
     {
         if (UsbProtocol != UsbProtocol.Usb488 || !Capabilities.AcceptsTrigger)
             throw VisaException.NotSupported("TRIGGER on a device without USB488 trigger capability");
-        if (async) return Tmc.TriggerAsync(deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Tmc.Trigger(deadline.RemainingMilliseconds);
+        var tmc = Tmc;
+        int timeout = ToUsbTimeout(deadline);
+        var token = deadline.CancellationToken;
+        if (async) return UsbErrorMapping.RunAsync(() => tmc.TriggerAsync(timeout, token));
+        UsbErrorMapping.Run(() => tmc.Trigger(timeout));
         return default;
     }
 
@@ -149,22 +167,31 @@ public sealed class UsbSession : UsbSessionBase
 
     private ValueTask RenControlAsync(bool enable, Deadline deadline, bool async)
     {
-        if (async) return Tmc.RenControlAsync(enable, deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Tmc.RenControl(enable, deadline.RemainingMilliseconds);
+        var tmc = Tmc;
+        int timeout = deadline.RemainingMilliseconds;
+        var token = deadline.CancellationToken;
+        if (async) return UsbErrorMapping.RunAsync(() => tmc.RenControlAsync(enable, timeout, token));
+        UsbErrorMapping.Run(() => tmc.RenControl(enable, timeout));
         return default;
     }
 
     private ValueTask GoToLocalAsync(Deadline deadline, bool async)
     {
-        if (async) return Tmc.GoToLocalAsync(deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Tmc.GoToLocal(deadline.RemainingMilliseconds);
+        var tmc = Tmc;
+        int timeout = deadline.RemainingMilliseconds;
+        var token = deadline.CancellationToken;
+        if (async) return UsbErrorMapping.RunAsync(() => tmc.GoToLocalAsync(timeout, token));
+        UsbErrorMapping.Run(() => tmc.GoToLocal(timeout));
         return default;
     }
 
     private ValueTask LocalLockoutAsync(Deadline deadline, bool async)
     {
-        if (async) return Tmc.LocalLockoutAsync(deadline.RemainingMilliseconds, deadline.CancellationToken);
-        Tmc.LocalLockout(deadline.RemainingMilliseconds);
+        var tmc = Tmc;
+        int timeout = deadline.RemainingMilliseconds;
+        var token = deadline.CancellationToken;
+        if (async) return UsbErrorMapping.RunAsync(() => tmc.LocalLockoutAsync(timeout, token));
+        UsbErrorMapping.Run(() => tmc.LocalLockout(timeout));
         return default;
     }
 
@@ -182,9 +209,10 @@ public sealed class UsbSession : UsbSessionBase
         {
             var session = (UsbSession)s;
             if (!session.Capabilities.AcceptsIndicatorPulse) throw VisaException.NotSupported("INDICATOR_PULSE");
+            var tmc = session.Tmc;
             int timeout = session.NewDeadline(ct).RemainingMilliseconds;
-            if (async) await session.Tmc.IndicatorPulseAsync(timeout, ct).ConfigureAwait(false);
-            else session.Tmc.IndicatorPulse(timeout);
+            if (async) await UsbErrorMapping.RunAsync(() => tmc.IndicatorPulseAsync(timeout, ct)).ConfigureAwait(false);
+            else UsbErrorMapping.Run(() => tmc.IndicatorPulse(timeout));
             return true;
         }, cancellationToken, async).ConfigureAwait(false);
 

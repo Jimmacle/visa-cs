@@ -53,7 +53,7 @@ public sealed partial class LibUsbBackend : IUsbBackend
                 NativeLibraries.EnsureRegistered();
                 nint ctx;
                 int rc = Native.libusb_init(&ctx);
-                if (rc != 0) throw new VisaException(VisaStatus.ErrorLibraryNotFound, $"libusb_init failed ({rc}).");
+                if (rc != 0) throw UsbErrors.Create(UsbError.LibraryNotFound, $"libusb_init failed ({rc}).", rc);
                 _context = ctx;
                 // Without a timer descriptor (macOS) libusb computes the next transfer timeout when event handling
                 // starts, so the event thread is woken after each submission to pick up the new timeout.
@@ -179,33 +179,33 @@ public sealed partial class LibUsbBackend : IUsbBackend
     /// <summary>Translates a libusb error code of a transfer.</summary>
     private static Exception Error(int rc, string operation) => rc switch
     {
-        Native.LIBUSB_ERROR_TIMEOUT => UsbTransferHelpers.TimedOut(operation),
-        Native.LIBUSB_ERROR_NO_DEVICE => UsbTransferHelpers.Disconnected(operation),
-        Native.LIBUSB_ERROR_PIPE => UsbTransferHelpers.Stalled(operation),
-        Native.LIBUSB_ERROR_ACCESS => new VisaException(VisaStatus.ErrorNoPermission, $"Access denied during USB {operation}."),
-        _ => UsbTransferHelpers.Failed(operation, $"libusb error {rc}"),
+        Native.LIBUSB_ERROR_TIMEOUT => UsbErrors.TimedOut(operation),
+        Native.LIBUSB_ERROR_NO_DEVICE => UsbErrors.Disconnected(operation, rc),
+        Native.LIBUSB_ERROR_PIPE => UsbErrors.Stalled(operation, rc),
+        Native.LIBUSB_ERROR_ACCESS => UsbErrors.AccessDenied($"Access denied during USB {operation}.", rc),
+        _ => UsbErrors.Failed(operation, $"libusb error {rc}", rc),
     };
 
     /// <summary>Translates a libusb error code of opening a device or claiming an interface.</summary>
-    private static VisaException OpenError(int rc, string what) => new(rc switch
+    private static UsbException OpenError(int rc, string what) => UsbErrors.Create(rc switch
     {
-        Native.LIBUSB_ERROR_ACCESS => VisaStatus.ErrorNoPermission,
-        Native.LIBUSB_ERROR_BUSY => VisaStatus.ErrorResourceBusy,
+        Native.LIBUSB_ERROR_ACCESS => UsbError.AccessDenied,
+        Native.LIBUSB_ERROR_BUSY => UsbError.Busy,
         // NOT_SUPPORTED: no driver libusb can use (on Windows, not bound to WinUSB or libusbK).
-        Native.LIBUSB_ERROR_NO_DEVICE or Native.LIBUSB_ERROR_NOT_FOUND or Native.LIBUSB_ERROR_NOT_SUPPORTED => VisaStatus.ErrorResourceNotFound,
-        _ => VisaStatus.ErrorIO,
-    }, $"{what} failed (libusb error {rc}).");
+        Native.LIBUSB_ERROR_NO_DEVICE or Native.LIBUSB_ERROR_NOT_FOUND or Native.LIBUSB_ERROR_NOT_SUPPORTED => UsbError.NotFound,
+        _ => UsbError.IOError,
+    }, $"{what} failed (libusb error {rc}).", rc);
 
     /// <inheritdoc/>
     public unsafe IUsbDeviceHandle Open(UsbDeviceInfo device, int interfaceNumber)
     {
         if (device.BackendData is not (byte bus, byte address))
-            throw new VisaException(VisaStatus.ErrorInvalidObject, "The device was not enumerated by the libusb backend.");
+            throw UsbErrors.ForeignDevice("libusb");
         var info = device.Interfaces.FirstOrDefault(x => x.Number == interfaceNumber);
         if (info is null)
         {
             if (device.Interfaces.Count > 0)
-                throw new VisaException(VisaStatus.ErrorResourceNotFound, $"Interface {interfaceNumber} of {device} not found.");
+                throw UsbErrors.NotFound($"Interface {interfaceNumber} of {device} not found.");
             // libusb could not read the configuration during enumeration: the interface is known only by its number.
             info = new UsbInterfaceInfo { Number = (byte)interfaceNumber, Class = 0xFF, SubClass = 0, Protocol = 0 };
         }
@@ -245,7 +245,7 @@ public sealed partial class LibUsbBackend : IUsbBackend
         {
             Native.libusb_free_device_list(list, 1);
         }
-        throw new VisaException(VisaStatus.ErrorResourceNotFound, $"{device} is no longer attached.");
+        throw UsbErrors.NotFound($"{device} is no longer attached.");
     }
 
     /// <summary>Closes the handles opened through this backend, stops its event thread and releases libusb.</summary>

@@ -34,13 +34,10 @@ public sealed class UsbRawSession : UsbSessionBase
     }
 
     /// <summary>One bulk transfer between the operations of other sessions to the device.</summary>
-    private ValueTask<int> BulkAsync(int endpoint, Memory<byte> buffer, Deadline deadline, bool async)
-    {
-        int wait = deadline.RemainingMilliseconds;
-        if (!async) return new(Tmc.RunExclusive(h => h.BulkTransfer((byte)endpoint, buffer.Span, ToUsbTimeout(deadline)), wait));
-        return Tmc.RunExclusiveAsync((h, ct) => h.BulkTransferAsync((byte)endpoint, buffer, ToUsbTimeout(deadline), ct), wait,
-            deadline.CancellationToken);
-    }
+    private ValueTask<int> BulkAsync(int endpoint, Memory<byte> buffer, Deadline deadline, bool async) =>
+        SharedDevice.RunExclusiveAsync(deadline, (h, ct, a) => a
+            ? h.BulkTransferAsync((byte)endpoint, buffer, ToUsbTimeout(deadline), ct)
+            : new(h.BulkTransfer((byte)endpoint, buffer.Span, ToUsbTimeout(deadline))), async);
 
     private protected override async ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
     {
@@ -73,18 +70,13 @@ public sealed class UsbRawSession : UsbSessionBase
         return new FillResult(n, n % BulkInPacketSize != 0 || n == 0); // a short packet ends the message
     }
 
-    private protected override async ValueTask ClearCoreAsync(Deadline deadline, bool async)
-    {
-        int wait = deadline.RemainingMilliseconds;
-        Func<IUsbDeviceHandle, bool> clear = h =>
+    private protected override async ValueTask ClearCoreAsync(Deadline deadline, bool async) =>
+        await SharedDevice.RunExclusiveAsync(deadline, (h, _, _) =>
         {
             if (BulkOutEndpoint >= 0) h.ClearHalt((byte)BulkOutEndpoint);
             if (BulkInEndpoint >= 0) h.ClearHalt((byte)BulkInEndpoint);
-            return true;
-        };
-        if (async) await Tmc.RunExclusiveAsync((h, _) => new ValueTask<bool>(clear(h)), wait, deadline.CancellationToken).ConfigureAwait(false);
-        else Tmc.RunExclusive(clear, wait);
-    }
+            return new ValueTask<bool>(true);
+        }, async).ConfigureAwait(false);
 
     private protected override ValueTask OnEventEnabledAsync(EventType eventType, bool async)
     {

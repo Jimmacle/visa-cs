@@ -42,15 +42,15 @@ public sealed partial class UsbFsBackend
             NativeLibraries.EnsureRegistered();
             Device = device;
             Interface = device.Interfaces.FirstOrDefault(i => i.Number == interfaceNumber)
-                ?? throw new VisaException(VisaStatus.ErrorResourceNotFound, $"Interface {interfaceNumber} of {device} not found.");
+                ?? throw UsbErrors.NotFound($"Interface {interfaceNumber} of {device} not found.");
             _interface = interfaceNumber;
 
             _fd = Libc.open(device.Location, Libc.O_RDWR | Libc.O_CLOEXEC);
             if (_fd < 0)
             {
                 int errno = Marshal.GetLastPInvokeError();
-                throw new VisaException(errno == Libc.EACCES ? VisaStatus.ErrorNoPermission : VisaStatus.ErrorResourceNotFound,
-                    $"Cannot open {device.Location} (errno {errno}). Add a udev rule granting access to the device.");
+                throw UsbErrors.Create(errno == Libc.EACCES ? UsbError.AccessDenied : UsbError.NotFound,
+                    $"Cannot open {device.Location} (errno {errno}). Add a udev rule granting access to the device.", errno);
             }
             _file = new SafeFileHandle(_fd, ownsHandle: true);
             try
@@ -81,7 +81,7 @@ public sealed partial class UsbFsBackend
 
             string? driver = BoundDriver(ifnum);
             if (driver == "usbfs")
-                throw new VisaException(VisaStatus.ErrorResourceBusy, $"USB interface {interfaceNumber} is in use by another program.");
+                throw UsbErrors.Busy($"USB interface {interfaceNumber} is in use by another program.");
 
             // Detach the kernel driver and claim in one step, unless another program claimed the interface meanwhile.
             var request = new Ioctl.DisconnectClaimRequest { @interface = ifnum, flags = Ioctl.DisconnectClaimExceptDriver };
@@ -116,20 +116,20 @@ public sealed partial class UsbFsBackend
             Libc.ioctl(_fd, Ioctl.IoctlCommand, &command);
         }
 
-        private static VisaException ClaimError(int errno, int interfaceNumber) => errno switch
+        private static UsbException ClaimError(int errno, int interfaceNumber) => errno switch
         {
-            Libc.EBUSY => new VisaException(VisaStatus.ErrorResourceBusy, $"USB interface {interfaceNumber} is in use by another program."),
-            ENOENT or EINVAL or Libc.ENODEV => new VisaException(VisaStatus.ErrorResourceNotFound, $"USB interface {interfaceNumber} not found (errno {errno})."),
-            Libc.EACCES => new VisaException(VisaStatus.ErrorNoPermission, $"No permission to claim USB interface {interfaceNumber}."),
-            _ => new VisaException(VisaStatus.ErrorResourceBusy, $"Cannot claim USB interface {interfaceNumber} (errno {errno})."),
+            Libc.EBUSY => UsbErrors.Busy($"USB interface {interfaceNumber} is in use by another program.", errno),
+            ENOENT or EINVAL or Libc.ENODEV => UsbErrors.NotFound($"USB interface {interfaceNumber} not found (errno {errno}).", errno),
+            Libc.EACCES => UsbErrors.AccessDenied($"No permission to claim USB interface {interfaceNumber}.", errno),
+            _ => UsbErrors.Busy($"Cannot claim USB interface {interfaceNumber} (errno {errno}).", errno),
         };
 
         private static Exception Error(int errno, string operation) => errno switch
         {
-            Libc.ETIMEDOUT => UsbTransferHelpers.TimedOut(operation),
-            Libc.ENODEV or Libc.ESHUTDOWN => UsbTransferHelpers.Disconnected(operation),
-            Libc.EPIPE => UsbTransferHelpers.Stalled(operation),
-            _ => UsbTransferHelpers.Failed(operation, $"errno {errno}"),
+            Libc.ETIMEDOUT => UsbErrors.TimedOut(operation),
+            Libc.ENODEV or Libc.ESHUTDOWN => UsbErrors.Disconnected(operation, errno),
+            Libc.EPIPE => UsbErrors.Stalled(operation, errno),
+            _ => UsbErrors.Failed(operation, $"errno {errno}", errno),
         };
 
         // ------------------------------------------------------------------ transfers
@@ -246,7 +246,7 @@ public sealed partial class UsbFsBackend
             lock (_urbSync)
             {
                 ObjectDisposedException.ThrowIf(_disposed, this);
-                if (_broken) throw UsbTransferHelpers.Disconnected(operation);
+                if (_broken) throw UsbErrors.Disconnected(operation);
                 if (Libc.ioctl(_fd, Ioctl.SubmitUrb, urb.Native) < 0) throw Error(Marshal.GetLastPInvokeError(), operation);
                 _urbs.Add((nint)urb.Native, urb);
                 if (!_pumping) _pumping = startPump = true;
@@ -327,7 +327,7 @@ public sealed partial class UsbFsBackend
                 foreach (var urb in completed) urb.TrySetResult();
             if (orphaned is not null)
                 foreach (var urb in orphaned)
-                    urb.TrySetException(UsbTransferHelpers.Disconnected("a transfer"));
+                    urb.TrySetException(UsbErrors.Disconnected("a transfer"));
             return pumping;
         }
 
@@ -362,7 +362,7 @@ public sealed partial class UsbFsBackend
             Libc.ioctl(_fd, Ioctl.ReleaseInterface, &ifnum); // kills the URBs of the interface
             if (_reattachDriver) Reattach(_interface);
             _file.Dispose();
-            foreach (var urb in pending) urb.TrySetException(UsbTransferHelpers.Disposed());
+            foreach (var urb in pending) urb.TrySetException(UsbErrors.Disposed());
         }
 
         /// <summary>
@@ -444,7 +444,7 @@ public sealed partial class UsbFsBackend
                     return Math.Clamp(ActualLength, 0, capacity);
                 }
                 if (Discarded && Status is -ENOENT or -ECONNRESET)
-                    throw UsbTransferHelpers.Interrupted(operation, cancellationToken, disposed: false);
+                    throw UsbErrors.Interrupted(operation, cancellationToken, disposed: false);
                 throw Error(-Status, operation);
             }
 

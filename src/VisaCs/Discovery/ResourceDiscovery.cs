@@ -25,7 +25,7 @@ internal static class ResourceDiscovery
     {
         var result = new List<ResourceInfo>();
         if (backend is null) return result;
-        foreach (var device in backend.EnumerateDevices())
+        foreach (var device in UsbErrorMapping.Run(backend.EnumerateDevices))
         {
             foreach (var intf in device.Interfaces)
             {

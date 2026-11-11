@@ -37,7 +37,7 @@ public sealed class UsbSessionTests
         session.TimeoutMilliseconds = Timeout.Infinite;
         session.ControlIn(0xA1, 7, 0, 0, 0x18);
         session.ControlOut(0x02, 1, 0, 0x01, ReadOnlySpan<byte>.Empty);
-        Assert.Equal(new[] { 0, 0 }, backend.ControlTimeouts.TakeLast(2)); // no limit
+        Assert.Equal(new[] { Timeout.Infinite, Timeout.Infinite }, backend.ControlTimeouts.TakeLast(2)); // no limit
 
         session.TimeoutMilliseconds = 1500;
         session.ControlIn(0xA1, 7, 0, 0, 0x18);
@@ -126,8 +126,8 @@ public sealed class UsbSessionTests
     {
         var (backend, _, _) = Create(0x7006, "DISP1");
         var handle = backend.Open(backend.EnumerateDevices()[0], 0);
-        var interrupt = handle.InterruptTransferAsync(0x83, new byte[8], 0).AsTask();
-        var bulk = Task.Run(() => handle.BulkTransfer(0x82, new byte[512], 0));
+        var interrupt = handle.InterruptTransferAsync(0x83, new byte[8], Timeout.Infinite).AsTask();
+        var bulk = Task.Run(() => handle.BulkTransfer(0x82, new byte[512], Timeout.Infinite));
         await Task.Delay(100);
         Assert.False(interrupt.IsCompleted || bulk.IsCompleted);
         handle.Dispose();
@@ -135,6 +135,91 @@ public sealed class UsbSessionTests
         await Assert.ThrowsAsync<ObjectDisposedException>(() => bulk.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Throws<ObjectDisposedException>(() => handle.ControlTransfer(0x80, 6, 0x0100, 0, new byte[18], 1000));
         backend.Open(backend.EnumerateDevices()[0], 0).Dispose(); // the device can be opened again
+    }
+
+    [Fact]
+    public async Task InstrAndRawSessionsShareTheInterruptEndpoint()
+    {
+        var (backend, device, instrument) = Create(0x7007, "MIX1");
+        using var rm = CreateResourceManager(backend);
+        using var raw = rm.Open<UsbRawSession>("USB::0x1234::0x7007::MIX1::RAW");
+        using var instr = rm.Open<UsbSession>("USB::0x1234::0x7007::MIX1::INSTR");
+        raw.EnableEvent(EventType.UsbInterrupt, EventMechanism.Queue);
+        instr.EnableEvent(EventType.ServiceRequest, EventMechanism.Queue);
+
+        // The status byte response arrives on the shared interrupt loop and goes to the INSTR session's request only.
+        for (int i = 0; i < 3; i++) instr.ReadStatusByte();
+        instrument.RequestService();
+        Assert.IsType<ServiceRequestEventArgs>(instr.WaitOnEvent(EventType.ServiceRequest, 5000));
+        device.SendInterrupt([0x01, 0x02]); // a vendor packet
+        var packets = new List<byte[]>();
+        while (true)
+        {
+            var e = Assert.IsType<UsbInterruptEventArgs>(raw.WaitOnEvent(EventType.UsbInterrupt, 5000));
+            packets.Add(e.Data);
+            if (e.Data[0] == 0x01) break;
+        }
+        // The RAW session sees the service request and the vendor packet, never a status byte response.
+        Assert.DoesNotContain(packets, p => (p[0] & 0x80) != 0 && (p[0] & 0x7F) > 1);
+
+        // Transfers of both sessions take turns on the one handle.
+        await Task.WhenAll(
+            Task.Run(() => { for (int i = 0; i < 5; i++) Assert.Equal(instrument.Identity, instr.Query("*IDN?")); }),
+            Task.Run(() => { for (int i = 0; i < 5; i++) raw.Clear(); }));
+        Assert.Equal(0, device.RepeatedTagCount);
+    }
+
+    [Fact]
+    public void LibraryErrorsBecomeVisaErrors()
+    {
+        var backend = new FailingBackend(new UsbException(UsbError.AccessDenied, "denied") { NativeError = 13 });
+        using var rm = CreateResourceManager(backend);
+        var error = Assert.Throws<VisaException>(() => rm.Open("USB::0x1234::0x7008::FAIL1::INSTR"));
+        Assert.Equal(VisaStatus.ErrorNoPermission, error.Status);
+        Assert.Equal(13, error.NativeError);
+        Assert.Same(backend.Error, error.InnerException);
+    }
+
+    [Theory]
+    [InlineData(UsbError.IOError, VisaStatus.ErrorIO)]
+    [InlineData(UsbError.Stall, VisaStatus.ErrorIO)]
+    [InlineData(UsbError.ProtocolError, VisaStatus.ErrorIO)]
+    [InlineData(UsbError.NotFound, VisaStatus.ErrorResourceNotFound)]
+    [InlineData(UsbError.Busy, VisaStatus.ErrorResourceBusy)]
+    [InlineData(UsbError.AccessDenied, VisaStatus.ErrorNoPermission)]
+    [InlineData(UsbError.Disconnected, VisaStatus.ErrorConnectionLost)]
+    [InlineData(UsbError.NotSupported, VisaStatus.ErrorOperationNotSupported)]
+    [InlineData(UsbError.LibraryNotFound, VisaStatus.ErrorLibraryNotFound)]
+    [InlineData(UsbError.OutOfMemory, VisaStatus.ErrorAllocation)]
+    [InlineData(UsbError.Aborted, VisaStatus.ErrorAbort)]
+    [InlineData(UsbError.SystemError, VisaStatus.ErrorSystemError)]
+    public void MapsEveryUsbError(UsbError usbError, VisaStatus status)
+    {
+        var original = new UsbException(usbError, "message") { NativeError = 42 };
+        var mapped = Assert.IsType<VisaException>(Internal.UsbErrorMapping.ToVisa(original));
+        Assert.Equal(status, mapped.Status);
+        Assert.Equal(42, mapped.NativeError);
+        Assert.EndsWith("message", mapped.Message);
+        Assert.Same(original, mapped.InnerException);
+    }
+
+    [Fact]
+    public void MapsEveryUsbErrorValue()
+    {
+        // A new UsbError value needs a row in MapsEveryUsbError.
+        Assert.Equal(12, Enum.GetValues<UsbError>().Length);
+    }
+
+    [Fact]
+    public void MapsTimeouts()
+    {
+        var original = new UsbTimeoutException("late") { BytesTransferred = 7 };
+        var mapped = Assert.IsType<VisaTimeoutException>(Internal.UsbErrorMapping.ToVisa(original));
+        Assert.Equal(VisaStatus.ErrorTimeout, mapped.Status);
+        Assert.Equal(7, mapped.BytesTransferred);
+        Assert.Same(original, mapped.InnerException);
+        var other = new InvalidOperationException();
+        Assert.Same(other, Internal.UsbErrorMapping.ToVisa(other));
     }
 
     [Fact]
@@ -164,6 +249,29 @@ public sealed class UsbSessionTests
         if (OperatingSystem.IsWindows()) Assert.IsType<WinUsbBackend>(backend);
         else if (OperatingSystem.IsLinux() && UsbFsBackend.IsAvailable) Assert.IsType<UsbFsBackend>(backend);
         else Assert.Equal(LibUsbBackend.IsAvailable, backend is LibUsbBackend);
+    }
+
+    /// <summary>Lists one device and fails to open it with <see cref="Error"/>.</summary>
+    private sealed class FailingBackend(UsbException error) : IUsbBackend
+    {
+        public UsbException Error { get; } = error;
+
+        public string Name => "Failing";
+
+        public IReadOnlyList<UsbDeviceInfo> EnumerateDevices() =>
+        [
+            new UsbDeviceInfo
+            {
+                VendorId = 0x1234, ProductId = 0x7008, SerialNumber = "FAIL1", Location = "fail",
+                Interfaces = [new UsbInterfaceInfo { Number = 0, Class = 0xFE, SubClass = 3, Protocol = 1 }],
+            },
+        ];
+
+        public IUsbDeviceHandle Open(UsbDeviceInfo device, int interfaceNumber) => throw Error;
+
+        public void Dispose()
+        {
+        }
     }
 
     /// <summary>Forwards to the simulated backend and records the timeouts of control transfers.</summary>

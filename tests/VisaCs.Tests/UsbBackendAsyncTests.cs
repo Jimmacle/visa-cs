@@ -14,6 +14,7 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
 {
     private const int HeaderSize = 12;
     private const int Timeout = 5000;
+    protected const int NoLimit = System.Threading.Timeout.Infinite;
     private static int _tag;
 
     protected UsbIpFixture Fixture { get; } = fixture;
@@ -136,7 +137,7 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         {
             while (true) await c.Handle.InterruptTransferAsync(c.InterruptIn, packet, 100);
         }
-        catch (VisaTimeoutException)
+        catch (UsbTimeoutException)
         {
         }
     }
@@ -180,10 +181,10 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         using var c = Connect();
         var buffer = new byte[64];
         // GET_DESCRIPTOR of a type the device does not have: the device stalls the request.
-        var sync = Assert.Throws<VisaException>(() => c.Handle.ControlTransfer(0x80, 6, 0x0F00, 0, buffer, Timeout));
-        var async = await Assert.ThrowsAsync<VisaException>(async () => await c.Handle.ControlTransferAsync(0x80, 6, 0x0F00, 0, buffer, Timeout));
-        Assert.Equal(sync.Status, async.Status);
-        Assert.Equal(VisaStatus.ErrorIO, async.Status);
+        var sync = Assert.Throws<UsbException>(() => c.Handle.ControlTransfer(0x80, 6, 0x0F00, 0, buffer, Timeout));
+        var async = await Assert.ThrowsAsync<UsbException>(async () => await c.Handle.ControlTransferAsync(0x80, 6, 0x0F00, 0, buffer, Timeout));
+        Assert.Equal(sync.Error, async.Error);
+        Assert.Equal(UsbError.Stall, async.Error);
         Assert.Equal(sync.Message, async.Message);
         // The default pipe works after the stall.
         Assert.Equal(18, await c.Handle.ControlTransferAsync(0x80, 6, 0x0100, 0, buffer.AsMemory(0, 18), Timeout));
@@ -226,7 +227,7 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         await c.Handle.BulkTransferAsync(c.BulkOut, RequestDevDepMsgIn(tag, 256), Timeout);
         var buffer = new byte[512];
         var watch = Stopwatch.StartNew();
-        await Assert.ThrowsAsync<VisaTimeoutException>(async () => await c.Handle.BulkTransferAsync(c.BulkIn, buffer, 200));
+        await Assert.ThrowsAsync<UsbTimeoutException>(async () => await c.Handle.BulkTransferAsync(c.BulkIn, buffer, 200));
         Assert.InRange(watch.ElapsedMilliseconds, 150, 3000);
         Assert.True(Fixture.Server.UnlinkCount > unlinks, "The kernel did not cancel the bulk-IN URB.");
 
@@ -247,7 +248,7 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         using var cts = new CancellationTokenSource(200);
         var watch = Stopwatch.StartNew();
         var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await c.Handle.BulkTransferAsync(c.BulkIn, buffer, 0, cts.Token));
+            await c.Handle.BulkTransferAsync(c.BulkIn, buffer, NoLimit, cts.Token));
         Assert.Equal(cts.Token, error.CancellationToken);
         Assert.InRange(watch.ElapsedMilliseconds, 150, 3000);
         Assert.True(Fixture.Server.UnlinkCount > unlinks, "The kernel did not cancel the bulk-IN URB.");
@@ -298,8 +299,8 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         try
         {
             await DrainInterruptsAsync(c);
-            var interrupt = c.Handle.InterruptTransferAsync(c.InterruptIn, new byte[8], 0).AsTask();
-            var bulk = c.Handle.BulkTransferAsync(c.BulkIn, new byte[512], 0).AsTask();
+            var interrupt = c.Handle.InterruptTransferAsync(c.InterruptIn, new byte[8], NoLimit).AsTask();
+            var bulk = c.Handle.BulkTransferAsync(c.BulkIn, new byte[512], NoLimit).AsTask();
             await Task.Delay(100);
             Assert.False(interrupt.IsCompleted || bulk.IsCompleted);
 
@@ -339,7 +340,7 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
             int before = ThreadCount();
             int urbs = Fixture.Server!.UrbCount;
             for (int i = 0; i < count; i++)
-                transfers.Add(c.Handle.InterruptTransferAsync(c.InterruptIn, new byte[8], 0, cts.Token).AsTask());
+                transfers.Add(c.Handle.InterruptTransferAsync(c.InterruptIn, new byte[8], NoLimit, cts.Token).AsTask());
             for (int i = 0; i < 100 && Fixture.Server.UrbCount < urbs + count; i++) await Task.Delay(50);
             Assert.True(Fixture.Server.UrbCount >= urbs + count, "The transfers did not reach the device.");
             await Task.Delay(500);
@@ -371,9 +372,23 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
 
         // No request pending: the device NAKs until the timeout.
         var watch = Stopwatch.StartNew();
-        Assert.Throws<VisaTimeoutException>(() => c.Handle.BulkTransfer(c.BulkIn, new byte[512], 200));
+        Assert.Throws<UsbTimeoutException>(() => c.Handle.BulkTransfer(c.BulkIn, new byte[512], 200));
         Assert.InRange(watch.ElapsedMilliseconds, 150, 3000);
         Assert.True(Fixture.Server.UnlinkCount > unlinks, "The kernel did not cancel the bulk-IN URB.");
+        Assert.Equal(Fixture.Instrument.Identity, await QueryAsync(c, "*IDN?"));
+    }
+
+    [Fact]
+    public async Task ZeroTimeoutDoesNotWait()
+    {
+        if (!Enabled) return;
+        using var c = Connect();
+
+        // No request pending, so nothing to read: a transfer with timeout 0 fails at once instead of waiting.
+        var watch = Stopwatch.StartNew();
+        Assert.Throws<UsbTimeoutException>(() => c.Handle.BulkTransfer(c.BulkIn, new byte[512], 0));
+        await Assert.ThrowsAsync<UsbTimeoutException>(async () => await c.Handle.BulkTransferAsync(c.BulkIn, new byte[512], 0));
+        Assert.True(watch.ElapsedMilliseconds < 1000, $"Transfers with timeout 0 took {watch.ElapsedMilliseconds} ms.");
         Assert.Equal(Fixture.Instrument.Identity, await QueryAsync(c, "*IDN?"));
     }
 
@@ -385,8 +400,8 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         try
         {
             await DrainInterruptsAsync(c);
-            var bulk = Task.Factory.StartNew(() => c.Handle.BulkTransfer(c.BulkIn, new byte[512], 0), TaskCreationOptions.LongRunning);
-            var interrupt = Task.Factory.StartNew(() => c.Handle.InterruptTransfer(c.InterruptIn, new byte[8], 0), TaskCreationOptions.LongRunning);
+            var bulk = Task.Factory.StartNew(() => c.Handle.BulkTransfer(c.BulkIn, new byte[512], NoLimit), TaskCreationOptions.LongRunning);
+            var interrupt = Task.Factory.StartNew(() => c.Handle.InterruptTransfer(c.InterruptIn, new byte[8], NoLimit), TaskCreationOptions.LongRunning);
             await Task.Delay(200);
             Assert.False(bulk.IsCompleted || interrupt.IsCompleted);
 
@@ -417,8 +432,8 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
             using (other)
             {
                 var device = Assert.Single(other.EnumerateDevices(), d => d.SerialNumber == UsbIpFixture.Serial);
-                var error = Assert.Throws<VisaException>(() => other.Open(device, 0));
-                Assert.Equal(VisaStatus.ErrorResourceBusy, error.Status);
+                var error = Assert.Throws<UsbException>(() => other.Open(device, 0));
+                Assert.Equal(UsbError.Busy, error.Error);
             }
         }
         // Not taken over: the first handle still works.
@@ -471,7 +486,7 @@ public sealed class UsbBackendAsyncLibUsbTests(UsbIpFixture fixture) : UsbBacken
         var c = Connect();
         try
         {
-            var pending = c.Handle.BulkTransferAsync(c.BulkIn, new byte[512], 0).AsTask();
+            var pending = c.Handle.BulkTransferAsync(c.BulkIn, new byte[512], NoLimit).AsTask();
             await Task.Delay(100);
             c.Backend.Dispose(); // closes the handle, stops the event thread, releases libusb
             await Assert.ThrowsAsync<ObjectDisposedException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));

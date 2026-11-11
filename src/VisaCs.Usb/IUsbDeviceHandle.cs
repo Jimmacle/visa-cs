@@ -13,12 +13,13 @@ namespace VisaCs.Usb;
 /// so <see cref="BulkTransfer"/> and <see cref="InterruptTransfer"/> are interchangeable.
 /// </para>
 /// <para>
-/// <b>Timeouts.</b> <c>timeoutMilliseconds</c> bounds one transfer; 0 and <see cref="Timeout.Infinite"/> (-1) wait
-/// without limit. A transfer that times out is cancelled in the operating system, then throws
-/// <see cref="VisaTimeoutException"/>. Data that an IN transfer had already received is discarded, and an OUT
-/// transfer may have been partly sent, so the protocol on top must resynchronize with the device (for example with
-/// the USBTMC abort or clear requests). A transfer that completes despite a late timeout or cancellation returns its
-/// result.
+/// <b>Timeouts.</b> <c>timeoutMilliseconds</c> bounds one transfer: a negative value (<see cref="Timeout.Infinite"/>)
+/// waits without limit, and 0 does not wait (the transfer fails with a timeout unless it completes at once; with
+/// <see cref="LibUsbBackend"/>, which has no such mode, it gets 1 ms). A transfer that times out is cancelled in the
+/// operating system, then throws <see cref="UsbTimeoutException"/>. Data that an IN transfer had already received
+/// is discarded, and an OUT transfer may have been partly sent, so the protocol on top must resynchronize with the
+/// device (for example with the USBTMC abort or clear requests). A transfer that completes despite a late timeout or
+/// cancellation returns its result.
 /// </para>
 /// <para>
 /// <b>Asynchronous transfers</b> hold no thread while they are pending. Cancelling the token cancels the transfer in
@@ -27,9 +28,10 @@ namespace VisaCs.Usb;
 /// on the same endpoint.
 /// </para>
 /// <para>
-/// <b>Errors.</b> <see cref="VisaException"/> with <see cref="VisaStatus.ErrorConnectionLost"/> when the device is
-/// unplugged, and <see cref="VisaStatus.ErrorIO"/> when an endpoint stalls (see <see cref="ClearHalt"/>) or a transfer
-/// fails otherwise.
+/// <b>Errors.</b> <see cref="UsbException"/> with <see cref="UsbError.Disconnected"/> when the device is unplugged,
+/// <see cref="UsbError.Stall"/> when an endpoint stalls (see <see cref="ClearHalt"/>), and <see cref="UsbError.IOError"/>
+/// (or another <see cref="UsbError"/>) when a transfer fails otherwise; <see cref="UsbException.NativeError"/> holds the
+/// operating system or libusb error code.
 /// </para>
 /// <para>
 /// <b>Thread safety.</b> All members may be called from any thread, concurrently. Synchronous and asynchronous
@@ -77,7 +79,7 @@ public interface IUsbDeviceHandle : IDisposable
 
     /// <summary>
     /// Clears a halt (stall) on an endpoint: sends CLEAR_FEATURE(ENDPOINT_HALT) to the device and resets the host's
-    /// data toggle for the endpoint. Throws <see cref="VisaException"/> when the request fails.
+    /// data toggle for the endpoint. Throws <see cref="UsbException"/> when the request fails.
     /// </summary>
     void ClearHalt(byte endpoint);
 }

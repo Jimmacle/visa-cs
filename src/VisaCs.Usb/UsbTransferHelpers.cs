@@ -28,12 +28,12 @@ internal static class UsbTransferHelpers
         BinaryPrimitives.WriteUInt16LittleEndian(destination[6..], (ushort)length);
     }
 
-    /// <summary>The deadline of one transfer: 0 or less waits without limit.</summary>
+    /// <summary>The deadline of one transfer: negative waits without limit, and 0 has expired at once.</summary>
     public static Deadline TransferDeadline(int timeoutMilliseconds, CancellationToken cancellationToken) =>
-        Deadline.FromMilliseconds(timeoutMilliseconds <= 0 ? -1 : timeoutMilliseconds).WithCancellation(cancellationToken);
+        Deadline.FromMilliseconds(timeoutMilliseconds).WithCancellation(cancellationToken);
 
-    /// <summary>A transfer timeout in the form of <see cref="Task.Wait(int)"/>: 0 or less waits without limit.</summary>
-    public static int WaitMilliseconds(int timeoutMilliseconds) => timeoutMilliseconds <= 0 ? Timeout.Infinite : timeoutMilliseconds;
+    /// <summary>A transfer timeout in the form of <see cref="Task.Wait(int)"/>: negative waits without limit, 0 does not wait.</summary>
+    public static int WaitMilliseconds(int timeoutMilliseconds) => timeoutMilliseconds < 0 ? Timeout.Infinite : timeoutMilliseconds;
 
     /// <summary>Waits for a task without throwing its exception; false on timeout.</summary>
     public static bool Wait(Task task, int milliseconds)
@@ -48,26 +48,4 @@ internal static class UsbTransferHelpers
         }
     }
 
-    public static VisaTimeoutException TimedOut(string operation) => new($"USB {operation} timed out.");
-
-    public static VisaException Disconnected(string operation) =>
-        new(VisaStatus.ErrorConnectionLost, $"USB device disconnected during {operation}.");
-
-    public static VisaException Stalled(string operation) => new(VisaStatus.ErrorIO, $"USB endpoint stalled during {operation}.");
-
-    public static VisaException Failed(string operation, string detail) => new(VisaStatus.ErrorIO, $"USB {operation} failed ({detail}).");
-
-    public static ObjectDisposedException Disposed() =>
-        new(nameof(IUsbDeviceHandle), "The USB device handle was disposed during the transfer.");
-
-    /// <summary>
-    /// The exception for a transfer that the backend cancelled before it completed: the caller's token, the handle
-    /// being disposed, or else the transfer's own timeout. Data that an IN transfer had received is lost.
-    /// </summary>
-    public static Exception Interrupted(string operation, CancellationToken cancellationToken, bool disposed)
-    {
-        if (cancellationToken.IsCancellationRequested) return AsyncIO.Canceled(TimedOut(operation), cancellationToken);
-        if (disposed) return Disposed();
-        return TimedOut(operation);
-    }
 }

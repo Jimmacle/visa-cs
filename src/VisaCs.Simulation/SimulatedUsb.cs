@@ -25,9 +25,9 @@ public sealed class SimulatedUsbBackend : IUsbBackend
     {
         var sim = Devices.FirstOrDefault(d => d.Info.VendorId == device.VendorId && d.Info.ProductId == device.ProductId &&
                                               d.Info.SerialNumber == device.SerialNumber)
-            ?? throw new VisaException(VisaStatus.ErrorResourceNotFound, "Simulated device not found.");
+            ?? throw new UsbException(UsbError.NotFound, "Simulated device not found.");
         if (interfaceNumber != sim.Info.Interfaces[0].Number)
-            throw new VisaException(VisaStatus.ErrorResourceNotFound, $"Interface {interfaceNumber} of {device} not found.");
+            throw new UsbException(UsbError.NotFound, $"Interface {interfaceNumber} of {device} not found.");
         return sim.Open();
     }
 
@@ -128,7 +128,7 @@ public sealed class SimulatedUsbTmcDevice
     {
         lock (_sync)
         {
-            if (_opened) throw new VisaException(VisaStatus.ErrorResourceBusy, "The simulated device is already open.");
+            if (_opened) throw new UsbException(UsbError.Busy, "The simulated device is already open.");
             _opened = true;
         }
         return new Handle(this, Info.Interfaces[0]);
@@ -283,7 +283,7 @@ public sealed class SimulatedUsbTmcDevice
                 1 => DeviceDescriptor,
                 2 => ConfigurationDescriptor,
                 3 => StringDescriptor(value & 0xFF),
-                _ => throw new VisaException(VisaStatus.ErrorIO, "Stall"),
+                _ => throw new UsbException(UsbError.Stall, "Stall"),
             };
             int n = Math.Min(descriptor.Length, buffer.Length);
             descriptor.AsSpan(0, n).CopyTo(buffer);
@@ -343,7 +343,7 @@ public sealed class SimulatedUsbTmcDevice
                     break;
                 case (0xA1, 128): // READ_STATUS_BYTE
                 {
-                    if (!Usb488) throw new VisaException(VisaStatus.ErrorIO, "Stall");
+                    if (!Usb488) throw new UsbException(UsbError.Stall, "Stall");
                     byte tag = (byte)value;
                     byte stb = _instrument.GetStatusByte(_current is not null || _output.Count > 0);
                     response[0] = 1;
@@ -387,7 +387,7 @@ public sealed class SimulatedUsbTmcDevice
                     length = 8;
                     break;
                 default:
-                    throw new VisaException(VisaStatus.ErrorIO, "Stall");
+                    throw new UsbException(UsbError.Stall, "Stall");
             }
         }
         int count = Math.Min(length, buffer.Length);
@@ -416,7 +416,7 @@ public sealed class SimulatedUsbTmcDevice
     /// <summary>Waits for an interrupt-IN packet. Cancelling the token throws <see cref="OperationCanceledException"/>.</summary>
     internal async ValueTask<int> TakeInterruptAsync(Memory<byte> buffer, int timeoutMilliseconds, CancellationToken cancellationToken, bool async)
     {
-        var deadline = Deadline.FromMilliseconds(timeoutMilliseconds <= 0 ? -1 : timeoutMilliseconds).WithCancellation(cancellationToken);
+        var deadline = Deadline.FromMilliseconds(timeoutMilliseconds).WithCancellation(cancellationToken);
         while (true)
         {
             Task next;
@@ -435,7 +435,7 @@ public sealed class SimulatedUsbTmcDevice
             if (!await ChangeSignal.WaitAsync(next, deadline, async).ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                throw new VisaTimeoutException("USB interrupt read timed out.");
+                throw new UsbTimeoutException("USB interrupt read timed out.");
             }
         }
     }
@@ -450,9 +450,9 @@ public sealed class SimulatedUsbTmcDevice
 
     internal int HandleBulkOut(ReadOnlySpan<byte> packet)
     {
-        if (packet.Length < 12) throw new VisaException(VisaStatus.ErrorIO, "Stall: short USBTMC header.");
+        if (packet.Length < 12) throw new UsbException(UsbError.Stall, "Stall: short USBTMC header.");
         byte msgId = packet[0], tag = packet[1];
-        if (packet[2] != (byte)~tag) throw new VisaException(VisaStatus.ErrorIO, "Stall: bad bTagInverse.");
+        if (packet[2] != (byte)~tag) throw new UsbException(UsbError.Stall, "Stall: bad bTagInverse.");
         lock (_sync)
         {
             if (tag == _lastTag) RepeatedTagCount++;
@@ -518,7 +518,7 @@ public sealed class SimulatedUsbTmcDevice
                 _instrument.Trigger();
                 break;
             default:
-                throw new VisaException(VisaStatus.ErrorIO, $"Stall: unsupported MsgID {msgId}.");
+                throw new UsbException(UsbError.Stall, $"Stall: unsupported MsgID {msgId}.");
         }
         return packet.Length;
     }
@@ -542,7 +542,7 @@ public sealed class SimulatedUsbTmcDevice
             if (async) await Task.Delay(ResponseDelayMilliseconds, cancellationToken).ConfigureAwait(false);
             else Thread.Sleep(ResponseDelayMilliseconds);
         }
-        var deadline = Deadline.FromMilliseconds(timeoutMilliseconds <= 0 ? -1 : timeoutMilliseconds).WithCancellation(cancellationToken);
+        var deadline = Deadline.FromMilliseconds(timeoutMilliseconds).WithCancellation(cancellationToken);
         while (true)
         {
             Task next;
@@ -557,7 +557,7 @@ public sealed class SimulatedUsbTmcDevice
             if (!await ChangeSignal.WaitAsync(next, deadline, async).ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                throw new VisaTimeoutException("USB bulk-in timed out (device NAK).");
+                throw new UsbTimeoutException("USB bulk-in timed out (device NAK).");
             }
         }
     }
