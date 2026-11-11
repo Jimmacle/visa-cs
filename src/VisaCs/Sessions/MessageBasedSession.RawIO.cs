@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Text;
+using VisaCs.Formatting;
 using VisaCs.Internal;
 
 namespace VisaCs;

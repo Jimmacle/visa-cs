@@ -12,6 +12,7 @@
     <ProjectReference Include="..\VisaCs.Serial\VisaCs.Serial.csproj" />
     <ProjectReference Include="..\VisaCs.Usb\VisaCs.Usb.csproj" />
     <ProjectReference Include="..\VisaCs.Gpib\VisaCs.Gpib.csproj" />
+    <ProjectReference Include="..\VisaCs.Formatting\VisaCs.Formatting.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />

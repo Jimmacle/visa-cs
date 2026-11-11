@@ -166,9 +166,26 @@ await s.PrintfAsync("VOLT %.3f\n", 1.5, token);                     // a token a
 
 Supported: flags `- + space # 0`, `*` width/precision, array modifiers `,N`, `,*` and `,#`, IEEE 488.2 number
 formats `@1 @2 @3`, size modifiers `h l L ll`, binary modifiers `z Z !ob !ol`, conversions
-`d i u o x X f e E g G s c b B y %`, and for reading `[set]`, `t` and `T`. `VisaFormatter` exposes the same
-language without a session. In the asynchronous forms the `CancellationToken` comes before the format arguments
-(`PrintfAsync(format, token, args)`), or as the last format argument.
+`d i u o x X f e E g G s c b B y %`, and for reading `[set]`, `t` and `T`. In the asynchronous forms the
+`CancellationToken` comes before the format arguments (`PrintfAsync(format, token, args)`), or as the last format
+argument.
+
+### Without a session
+
+The block, value-list and format helpers are in the standalone `VisaCs.Formatting` library (namespace
+`VisaCs.Formatting`, depends only on `VisaCs.Primitives`), for messages sent over a `NativeSerialPort`, a GPIB
+device or any other transport:
+
+```csharp
+byte[] data = Ieee4882.ParseBlock(response);                        // skips text before '#', checks the length
+float[] wave = Ieee4882.BytesToValues<float>(data, ByteOrder.BigEndian);
+byte[] block = Ieee4882.BuildBlock(Ieee4882.ValuesToBytes<float>(wave, ByteOrder.LittleEndian));
+double[] trace = Ieee4882.ParseValues<double>("1.5E+00,-2.0E-01\n");  // same parsing as QueryAsciiValues
+byte[] command = VisaFormatter.Format("VOLT %.3f;:CURR %d\n", [1.5, 2]);
+object?[] idn = VisaFormatter.Parse("%[^,],%[^,]", reply);
+```
+
+`Ieee4882.TryParseBlockHeader` reads just the header, for code that reads a block piece by piece.
 
 ## Device operations
 

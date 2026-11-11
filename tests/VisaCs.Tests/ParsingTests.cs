@@ -1,5 +1,6 @@
 using System.Text;
 using VisaCs.Discovery;
+using VisaCs.Formatting;
 using VisaCs.Internal;
 
 namespace VisaCs.Tests;
@@ -298,5 +299,61 @@ public class StatusAndAttributeNameTests
         Assert.Empty(Ieee4882.ParseValues<double>("", ','));
         Assert.Throws<VisaException>(() => Ieee4882.ParseValues<int>("1,abc,3", ','));
         Assert.Throws<VisaException>(() => Ieee4882.ParseValues<double>("1.5,NaNx", ','));
+    }
+
+    [Fact]
+    public void BinaryBlocksRoundTrip()
+    {
+        var data = new byte[] { 1, 2, 3, (byte)'\n', (byte)'#' };
+        var block = Ieee4882.BuildBlock(data);
+        Assert.Equal("#15\x01\x02\x03\n#"u8.ToArray(), block);
+        Assert.Equal(data, Ieee4882.ParseBlock(block));
+        Assert.Equal(data, Ieee4882.ParseBlock([.. "CURV "u8, .. block, .. "\n"u8]));
+        Assert.Empty(Ieee4882.ParseBlock("#10"u8));
+        Assert.Equal(new byte[1000], Ieee4882.ParseBlock(Ieee4882.BuildBlock(new byte[1000])));
+
+        Assert.True(Ieee4882.TryParseBlockHeader("#3123abc"u8, out int headerLength, out int dataLength));
+        Assert.Equal((5, 123), (headerLength, dataLength));
+        Assert.True(Ieee4882.TryParseBlockHeader("#0abc"u8, out headerLength, out dataLength));
+        Assert.Equal((2, -1), (headerLength, dataLength));
+
+        // Indefinite-length block: data runs to the end of the message, without the final line feed.
+        Assert.True(Ieee4882.TryParseBlock("x#0ab\n"u8, out var range));
+        Assert.Equal(3..5, range);
+        Assert.Equal("ab"u8.ToArray(), Ieee4882.ParseBlock("#0ab\n"u8));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("no block")]
+    [InlineData("#")]
+    [InlineData("#x12")]
+    [InlineData("#3")]
+    [InlineData("#31a3abc")]
+    [InlineData("#15abc")] // shorter than announced
+    public void MalformedBlocksAreRejected(string message)
+    {
+        var bytes = Encoding.ASCII.GetBytes(message);
+        Assert.False(Ieee4882.TryParseBlock(bytes, out _));
+        Assert.Equal(VisaStatus.ErrorInvalidFormat, Assert.Throws<VisaException>(() => Ieee4882.ParseBlock(bytes)).Status);
+    }
+
+    [Fact]
+    public void BinaryValuesUseTheByteOrder()
+    {
+        int[] values = [0x01020304, -2];
+        Assert.Equal(new byte[] { 1, 2, 3, 4, 0xFF, 0xFF, 0xFF, 0xFE }, Ieee4882.ValuesToBytes<int>(values, ByteOrder.BigEndian));
+        Assert.Equal(new byte[] { 4, 3, 2, 1, 0xFE, 0xFF, 0xFF, 0xFF }, Ieee4882.ValuesToBytes<int>(values, ByteOrder.LittleEndian));
+        foreach (var order in new[] { ByteOrder.BigEndian, ByteOrder.LittleEndian })
+        {
+            double[] samples = [1.5, -0.25, double.MaxValue];
+            Assert.Equal(samples, Ieee4882.BytesToValues<double>(Ieee4882.ValuesToBytes<double>(samples, order), order));
+        }
+        var swapped = new byte[] { 1, 2, 3, 4, 5 };
+        Ieee4882.SwapBytes(swapped, 2);
+        Assert.Equal(new byte[] { 2, 1, 4, 3, 5 }, swapped);
+        Assert.Equal("1.5,-2,3", Ieee4882.FormatValues([1.5, -2.0, 3.0]));
+        Assert.Equal("1;2", Ieee4882.FormatValues([1, 2], ';'));
+        Assert.Equal(new[] { 1.5, -2.0 }, Ieee4882.ParseValues<double>("+1.5E+00,-2\n"));
     }
 }

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>VisaCs.Formatting</RootNamespace>
+    <Description>IEEE 488.2 message formats for SCPI instruments over any transport: definite-length binary blocks, binary arrays with a byte order, ASCII value lists, and the VISA printf/scanf format language.</Description>
+    <PackageTags>ieee488;scpi;visa;printf;scanf;instrument</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
+  </ItemGroup>
+</Project>
