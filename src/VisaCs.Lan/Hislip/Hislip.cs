@@ -3,7 +3,7 @@ using System.Buffers.Binary;
 using System.Text;
 using VisaCs.Internal;
 
-namespace VisaCs.Protocols.Hislip;
+namespace VisaCs.Lan.Protocols;
 
 /// <summary>HiSLIP (IVI-6.1) message types.</summary>
 internal enum HislipMessageType : byte
@@ -85,7 +85,7 @@ internal static class Hislip
     public static HislipHeader ParseHeader(ReadOnlySpan<byte> source)
     {
         if (source[0] != 'H' || source[1] != 'S')
-            throw new VisaException(VisaStatus.ErrorIO, "HiSLIP protocol error: invalid message prologue.");
+            throw LanErrors.IO("HiSLIP protocol error: invalid message prologue.");
         return new HislipHeader((HislipMessageType)source[2], source[3],
             BinaryPrimitives.ReadUInt32BigEndian(source[4..]),
             BinaryPrimitives.ReadUInt64BigEndian(source[8..]));
@@ -142,7 +142,7 @@ internal static class Hislip
         if (header.PayloadLength > MaxControlPayload)
         {
             if (!skipIfTooLarge)
-                throw new VisaException(VisaStatus.ErrorIO, $"HiSLIP protocol error: unexpected payload of {header.PayloadLength} bytes in {header.Type}.");
+                throw LanErrors.IO($"HiSLIP protocol error: unexpected payload of {header.PayloadLength} bytes in {header.Type}.");
             await channel.SkipAsync((long)Math.Min(header.PayloadLength, long.MaxValue), deadline, async).ConfigureAwait(false);
             return [];
         }
@@ -202,11 +202,11 @@ internal static class Hislip
     {
         string text = $"HiSLIP fatal error: {DescribeFatalError(message.Control)} {message.PayloadText}".Trim();
         return message.Control == 5
-            ? new VisaSecurityException(SecurityFailure.Policy, text)
-            : new VisaException(VisaStatus.ErrorConnectionLost, text);
+            ? LanErrors.Security(SecurityFailure.Policy, text)
+            : LanErrors.ConnectionLost(text);
     }
 
     /// <summary>The exception for an Error message.</summary>
     public static VisaException ErrorException(HislipMessage message, string? context = null) =>
-        new(VisaStatus.ErrorIO, $"HiSLIP error{(context is null ? "" : " " + context)}: {DescribeError(message.Control)} {message.PayloadText}".Trim());
+        LanErrors.IO($"HiSLIP error{(context is null ? "" : " " + context)}: {DescribeError(message.Control)} {message.PayloadText}".Trim());
 }

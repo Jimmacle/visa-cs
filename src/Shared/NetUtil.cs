@@ -40,11 +40,11 @@ internal static class NetUtil
         }
         catch (OperationCanceledException ex)
         {
-            throw new VisaTimeoutException($"Resolving '{host}' timed out.", ex);
+            throw Timeout($"Resolving '{host}' timed out.", ex);
         }
         catch (SocketException ex)
         {
-            throw new VisaException(VisaStatus.ErrorResourceNotFound, $"Cannot resolve host '{host}': {ex.Message}", ex);
+            throw NotFound($"Cannot resolve host '{host}': {ex.Message}", ex);
         }
     }
 
@@ -66,7 +66,7 @@ internal static class NetUtil
                 last = se;
             }
         }
-        throw new VisaException(VisaStatus.ErrorResourceNotFound, $"Unable to connect to {host}:{port}: {last?.Message}", last);
+        throw NotFound($"Unable to connect to {host}:{port}: {last?.Message}", last);
     }
 
     /// <summary>Connects a TCP socket to one address and returns it in non-blocking mode.</summary>
@@ -86,12 +86,12 @@ internal static class NetUtil
         catch (OperationCanceledException ex)
         {
             socket.Dispose();
-            throw new VisaTimeoutException($"Connection to {target} timed out.", ex);
+            throw Timeout($"Connection to {target} timed out.", ex);
         }
         catch (SocketException ex)
         {
             socket.Dispose();
-            throw new VisaException(VisaStatus.ErrorResourceNotFound, $"Unable to connect to {target}: {ex.Message}", ex);
+            throw NotFound($"Unable to connect to {target}: {ex.Message}", ex);
         }
         catch
         {
@@ -154,12 +154,12 @@ internal static class NetUtil
             int n = socket.Receive(buffer, SocketFlags.None, out var error);
             if (error == SocketError.Success)
             {
-                if (n == 0) throw new VisaException(VisaStatus.ErrorConnectionLost, "The remote host closed the connection.");
+                if (n == 0) throw ConnectionLost("The remote host closed the connection.");
                 return n;
             }
             if (!IsTransient(error))
-                throw new VisaException(VisaStatus.ErrorConnectionLost, $"Socket receive failed: {error}.");
-            if (!WaitFor(socket, SelectMode.SelectRead, deadline)) throw new VisaTimeoutException();
+                throw ConnectionLost($"Socket receive failed: {error}.");
+            if (!WaitFor(socket, SelectMode.SelectRead, deadline)) throw Timeout();
         }
     }
 
@@ -182,16 +182,16 @@ internal static class NetUtil
             }
             catch (OperationCanceledException ex)
             {
-                throw new VisaTimeoutException(null, ex);
+                throw Timeout(null, ex);
             }
             catch (SocketException ex)
             {
-                throw new VisaException(VisaStatus.ErrorConnectionLost, $"Socket receive failed: {ex.SocketErrorCode}.", ex);
+                throw ConnectionLost($"Socket receive failed: {ex.SocketErrorCode}.", ex);
             }
         }
         if (error != SocketError.Success)
-            throw new VisaException(VisaStatus.ErrorConnectionLost, $"Socket receive failed: {error}.");
-        if (n == 0) throw new VisaException(VisaStatus.ErrorConnectionLost, "The remote host closed the connection.");
+            throw ConnectionLost($"Socket receive failed: {error}.");
+        if (n == 0) throw ConnectionLost("The remote host closed the connection.");
         return n;
     }
 
@@ -233,7 +233,7 @@ internal static class NetUtil
                 continue;
             }
             if (!IsTransient(error))
-                throw new VisaException(VisaStatus.ErrorConnectionLost, $"Socket send failed: {error}.");
+                throw ConnectionLost($"Socket send failed: {error}.");
             if (!async)
             {
                 if (!WaitFor(socket, SelectMode.SelectWrite, deadline))
@@ -252,7 +252,7 @@ internal static class NetUtil
             }
             catch (SocketException ex)
             {
-                throw new VisaException(VisaStatus.ErrorConnectionLost, $"Socket send failed: {ex.SocketErrorCode}.", ex);
+                throw ConnectionLost($"Socket send failed: {ex.SocketErrorCode}.", ex);
             }
         }
     }
@@ -299,6 +299,15 @@ internal static class NetUtil
 
     public static IPAddress Normalize(IPAddress address) =>
         address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+
+    // The exceptions this class creates (besides SendTimeoutException), in one place.
+    private static VisaTimeoutException Timeout(string? message = null, Exception? innerException = null) => new(message, innerException);
+
+    private static VisaException ConnectionLost(string message, Exception? innerException = null) =>
+        new(VisaStatus.ErrorConnectionLost, message, innerException);
+
+    private static VisaException NotFound(string message, Exception? innerException = null) =>
+        new(VisaStatus.ErrorResourceNotFound, message, innerException);
 }
 
 /// <summary>A send that timed out (VI_ERROR_TMO). <see cref="NothingSent"/> tells whether the peer can have received part of the data.</summary>

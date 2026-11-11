@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using VisaCs.Gpib;
 using VisaCs.Internal;
+using VisaCs.Lan;
 using VisaCs.Serial;
 using VisaCs.Usb;
 
@@ -121,10 +122,10 @@ internal static class ResourceDiscovery
 /// </summary>
 internal sealed class LanSearch
 {
-    private static readonly string[] MdnsServices = ["_hislip._tcp.local", "_vxi-11._tcp.local", "_scpi-raw._tcp.local"];
+    private static readonly string[] MdnsServices = [MdnsServiceTypes.Hislip, MdnsServiceTypes.Vxi11, MdnsServiceTypes.ScpiRaw];
 
     private readonly ResourceManagerOptions _options;
-    private readonly Task<List<IPAddress>>? _vxi11;
+    private readonly Task<IReadOnlyList<IPAddress>>? _vxi11;
     private readonly Task<IReadOnlyList<MdnsServiceInstance>>? _mdns;
 
     private LanSearch(ResourceManagerOptions options, CancellationToken cancellationToken, bool async)
@@ -136,7 +137,7 @@ internal sealed class LanSearch
             bool broadcast = options.EnableLanDiscovery && options.LanDiscoveryUsesBroadcast;
             var targets = options.LanDiscoveryTargets.ToList();
             _vxi11 = async
-                ? Vxi11Discovery.DiscoverAsync(timeout, options.Vxi11PortmapperPort, targets, broadcast, cancellationToken, async: true).AsTask()
+                ? Vxi11Discovery.DiscoverAsync(timeout, options.Vxi11PortmapperPort, targets, broadcast, cancellationToken)
                 : Task.Run(() => Vxi11Discovery.Discover(timeout, options.Vxi11PortmapperPort, targets, broadcast));
         }
         if (options.EnableMdnsDiscovery)

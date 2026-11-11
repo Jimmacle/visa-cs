@@ -3,8 +3,7 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using VisaCs.Internal;
-using VisaCs.Protocols.Hislip;
-using VisaCs.Protocols.Rpc;
+using VisaCs.Lan.Protocols;
 
 namespace VisaCs.Simulation;
 
@@ -52,15 +51,9 @@ internal static class SyncProtocolIO
         return ms.ToArray();
     }
 
-    // ------------------------------------------------------------------ sockets and RPC
+    // ------------------------------------------------------------------ sockets
 
     /// <summary>Receives exactly <paramref name="buffer"/>.Length bytes from a (blocking) accepted socket.</summary>
     public static void ReceiveExact(Socket socket, byte[] buffer) =>
         AsyncIO.Complete(NetUtil.ReceiveExactAsync(socket, buffer, Deadline.Infinite, async: false));
-
-    public static RpcTcpClient ConnectRpc(IPEndPoint endPoint, uint program, uint version, int timeoutMilliseconds) =>
-        AsyncIO.Complete(RpcTcpClient.ConnectAsync(endPoint, program, version, Deadline.FromMilliseconds(timeoutMilliseconds), async: false));
-
-    public static XdrReader Call(this RpcTcpClient client, uint procedure, Action<XdrWriter>? writeArgs, Deadline deadline) =>
-        AsyncIO.Complete(client.CallAsync(procedure, writeArgs, deadline, async: false));
 }

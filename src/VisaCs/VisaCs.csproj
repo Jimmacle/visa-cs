@@ -14,15 +14,16 @@
     <ProjectReference Include="..\VisaCs.Gpib\VisaCs.Gpib.csproj" />
     <ProjectReference Include="..\VisaCs.Formatting\VisaCs.Formatting.csproj" />
     <ProjectReference Include="..\VisaCs.Pci\VisaCs.Pci.csproj" />
+    <ProjectReference Include="..\VisaCs.Lan\VisaCs.Lan.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
     <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
     <Compile Include="..\Shared\ChangeSignal.cs" Link="Internal\ChangeSignal.cs" />
     <Compile Include="..\Shared\IOGate.cs" Link="Internal\IOGate.cs" />
+    <Compile Include="..\Shared\NetUtil.cs" Link="Internal\NetUtil.cs" />
   </ItemGroup>
   <ItemGroup>
-    <InternalsVisibleTo Include="VisaCs.Simulation" />
     <InternalsVisibleTo Include="VisaCs.Tests" />
   </ItemGroup>
 </Project>

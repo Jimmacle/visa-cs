@@ -2,11 +2,12 @@ using System.Buffers.Binary;
 using System.Net.Security;
 using System.Text;
 using VisaCs.Internal;
+using VisaCs.Lan.Protocols;
 
-namespace VisaCs.Protocols.Hislip;
+namespace VisaCs.Lan;
 
 /// <summary>HiSLIP 2.0 secure connections: TLS on both channels (StartTLS/EndTLS) and SASL authentication.</summary>
-internal sealed partial class HislipConnection
+public sealed partial class HislipClient
 {
     /// <summary>
     /// Mechanisms tried when <see cref="HislipSecurityOptions.SaslMechanisms"/> is empty, strongest first. PLAIN is only
@@ -20,15 +21,15 @@ internal sealed partial class HislipConnection
         switch (security.Encryption)
         {
             case HislipEncryptionMode.Disabled when required:
-                throw new VisaSecurityException(SecurityFailure.Policy,
+                throw LanErrors.Security(SecurityFailure.Policy,
                     "The HiSLIP server requires an encrypted connection, but encryption is disabled in HislipSecurityOptions.");
             case HislipEncryptionMode.Required when !SecureConnectionSupported:
-                throw new VisaSecurityException(SecurityFailure.Policy,
-                    $"The HiSLIP server (protocol {NegotiatedProtocolVersion >> 8}.{NegotiatedProtocolVersion & 0xFF}) does not support secure connections.");
+                throw LanErrors.Security(SecurityFailure.Policy,
+                    $"The HiSLIP server (protocol {ProtocolVersion >> 8}.{ProtocolVersion & 0xFF}) does not support secure connections.");
             case HislipEncryptionMode.Required:
             case HislipEncryptionMode.Preferred when SecureConnectionSupported:
             case HislipEncryptionMode.Auto when required:
-                await EstablishSecureConnectionAsync(security, deadline, async).ConfigureAwait(false);
+                await EstablishSecureConnectionCoreAsync(security, deadline, async).ConfigureAwait(false);
                 break;
         }
     }
@@ -53,7 +54,7 @@ internal sealed partial class HislipConnection
     {
         try
         {
-            var error = (await GetDescriptorsAsync(deadline, async).ConfigureAwait(false)).FirstOrDefault(d => d.Type == HislipDescriptorType.TlsLastError);
+            var error = (await GetDescriptorsCoreAsync(deadline, async).ConfigureAwait(false)).FirstOrDefault(d => d.Type == HislipDescriptorType.TlsLastError);
             return error.Content is { Length: > 0 } ? $" Server reports: {error.Text}" : "";
         }
         catch (VisaException)
@@ -63,22 +64,23 @@ internal sealed partial class HislipConnection
     }
 
     private static VisaException ServerBusy() =>
-        new(VisaStatus.ErrorResourceBusy, "The HiSLIP server is busy (unread data); clear the device and try again.");
+        LanErrors.Busy("The HiSLIP server is busy (unread data); clear the device and try again.");
 
     /// <summary>The Establish Secure Connection transaction: TLS on both channels, then SASL authentication.</summary>
-    public async ValueTask EstablishSecureConnectionAsync(HislipSecurityOptions security, Deadline deadline, bool async)
+    private async ValueTask EstablishSecureConnectionCoreAsync(HislipSecurityOptions security, Deadline deadline, bool async)
     {
+        ArgumentNullException.ThrowIfNull(security);
         ThrowIfClosed();
         if (IsEncrypted) return;
         if (!SecureConnectionSupported)
-            throw new VisaSecurityException(SecurityFailure.Policy, "The HiSLIP server does not support secure connections.");
+            throw LanErrors.Security(SecurityFailure.Policy, "The HiSLIP server does not support secure connections.");
 
         byte answer = await SwitchAsyncChannelAsync(HislipMessageType.AsyncStartTls, HislipMessageType.AsyncStartTlsResponse,
             async channel => await TlsHislipChannel.AuthenticateAsClientAsync(channel.Socket, TlsOptions(security), deadline, async).ConfigureAwait(false),
             "starting TLS failed", deadline, async).ConfigureAwait(false);
         if (answer == 0) throw ServerBusy();
         if (answer != 1)
-            throw new VisaSecurityException(SecurityFailure.TlsNegotiation,
+            throw LanErrors.Security(SecurityFailure.TlsNegotiation,
                 "The HiSLIP server refused to start TLS." + await LastTlsErrorAsync(deadline, async).ConfigureAwait(false));
 
         await SwitchSyncChannelAsync(HislipMessageType.StartTls,
@@ -100,19 +102,19 @@ internal sealed partial class HislipConnection
     }
 
     /// <summary>The End Secure Connection transaction (only allowed when encryption is optional).</summary>
-    public async ValueTask EndSecureConnectionAsync(Deadline deadline, bool async)
+    private async ValueTask EndSecureConnectionCoreAsync(Deadline deadline, bool async)
     {
         ThrowIfClosed();
         if (!IsEncrypted) return;
         if (EncryptionMandatory)
-            throw new VisaSecurityException(SecurityFailure.Policy, "The HiSLIP server requires encryption; it cannot be switched off.");
+            throw LanErrors.Security(SecurityFailure.Policy, "The HiSLIP server requires encryption; it cannot be switched off.");
 
         byte answer = await SwitchAsyncChannelAsync(HislipMessageType.AsyncEndTls, HislipMessageType.AsyncEndTlsResponse,
             async channel => await ((TlsHislipChannel)channel).EndTlsAsync(deadline, async).ConfigureAwait(false),
             "ending TLS failed", deadline, async).ConfigureAwait(false);
         if (answer == 0) throw ServerBusy();
         if (answer != 1)
-            throw new VisaException(VisaStatus.ErrorIO, "The HiSLIP server refused to end TLS." + await LastTlsErrorAsync(deadline, async).ConfigureAwait(false));
+            throw LanErrors.IO("The HiSLIP server refused to end TLS." + await LastTlsErrorAsync(deadline, async).ConfigureAwait(false));
 
         await SwitchSyncChannelAsync(HislipMessageType.EndTls,
             async channel => await ((TlsHislipChannel)channel).EndTlsAsync(deadline, async).ConfigureAwait(false),
@@ -236,11 +238,11 @@ internal sealed partial class HislipConnection
         var list = await ReceiveSyncMessageAsync(deadline, async).ConfigureAwait(false);
         if (list.Type == HislipMessageType.FatalError) throw Fatal(list);
         if (list.Type != HislipMessageType.GetSaslMechanismListResponse)
-            throw new VisaException(VisaStatus.ErrorIO, $"HiSLIP protocol error: expected GetSaslMechanismListResponse, got {list.Type}.");
+            throw LanErrors.IO($"HiSLIP protocol error: expected GetSaslMechanismListResponse, got {list.Type}.");
         var offered = Encoding.ASCII.GetString(list.Payload).Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var candidates = CandidateMechanisms(offered, security, tls);
         if (candidates.Count == 0)
-            throw new VisaSecurityException(SecurityFailure.Authentication,
+            throw LanErrors.Security(SecurityFailure.Authentication,
                 $"No usable SASL mechanism: the server offers [{string.Join(", ", offered)}]" +
                 (security.CredentialsFor(_host) is null ? " and no credentials are configured." : "."));
 
@@ -263,10 +265,10 @@ internal sealed partial class HislipConnection
                 if (message.Type == HislipMessageType.AuthenticationResult)
                 {
                     if ((message.Control & 1) == 0)
-                        throw new VisaSecurityException(SecurityFailure.Authentication,
+                        throw LanErrors.Security(SecurityFailure.Authentication,
                             $"Authentication with {mechanism.Name} failed: {Encoding.UTF8.GetString(message.Payload)} (code {message.Parameter}).");
                     if (!mechanism.VerifyOutcome(message.Payload))
-                        throw new VisaSecurityException(SecurityFailure.Authentication,
+                        throw LanErrors.Security(SecurityFailure.Authentication,
                             $"The server's {mechanism.Name} signature is invalid: it may not know the credentials (possible impersonation).");
                     SaslMechanism = mechanism.Name;
                     return;
@@ -278,9 +280,9 @@ internal sealed partial class HislipConnection
                     break;
                 }
                 if (message.Type == HislipMessageType.FatalError) throw Fatal(message);
-                throw new VisaException(VisaStatus.ErrorIO, $"HiSLIP protocol error: unexpected {message.Type} during authentication.");
+                throw LanErrors.IO($"HiSLIP protocol error: unexpected {message.Type} during authentication.");
             }
         }
-        throw new VisaSecurityException(SecurityFailure.Authentication, "Authentication failed: the server rejected " + string.Join("; ", rejected));
+        throw LanErrors.Security(SecurityFailure.Authentication, "Authentication failed: the server rejected " + string.Join("; ", rejected));
     }
 }

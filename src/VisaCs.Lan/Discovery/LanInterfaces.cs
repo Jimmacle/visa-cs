@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 
-namespace VisaCs.Discovery;
+namespace VisaCs.Lan;
 
 /// <summary>The local IPv4 interfaces that LAN discovery sends on.</summary>
 internal static class LanInterfaces

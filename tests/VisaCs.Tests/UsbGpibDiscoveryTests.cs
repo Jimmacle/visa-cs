@@ -1,5 +1,6 @@
 using System.Net;
 using VisaCs.Discovery;
+using VisaCs.Lan;
 using VisaCs.Simulation;
 using VisaCs.Usb;
 

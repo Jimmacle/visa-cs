@@ -49,6 +49,9 @@ jobs:
       - name: Test
         run: dotnet test tests/VisaCs.Tests -c Release --no-build --blame-hang-timeout 3m --logger trx --results-directory TestResults/default
 
+      - name: Test LAN library
+        run: dotnet test tests/VisaCs.Lan.Tests -c Release --no-build --blame-hang-timeout 3m --logger trx --results-directory TestResults/lan
+
       # The NI-488.2 binding runs against a stand-in driver library built from tests/Native/fake_ni4882.c, once
       # for each kind of driver: NI-like, without ibnotify (like linux-gpib), and without asynchronous calls.
       - name: Build stand-in GPIB libraries (Windows)

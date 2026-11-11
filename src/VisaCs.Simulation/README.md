@@ -1,14 +1,11 @@
 # VisaCs.Simulation
 
-Simulated instruments and protocol servers for testing code built on VisaCs without hardware: a scriptable
+Simulated instruments and protocol servers for testing code built on VisaCs or `VisaCs.Lan` without hardware: a scriptable
 SCPI instrument served over VXI-11, HiSLIP (incl. 2.0 TLS and SASL), raw socket and VICP, a simulated
 USBTMC/USB488 backend, a simulated GPIB driver, and a USB/IP exporter for testing the real Linux USB stack.
 Meant for test projects; the servers use a thread per connection.
 
 ## Install
-
-Use **exactly the same version as `VisaCs`**: this package depends on VisaCs internals and is pinned to one
-VisaCs version.
 
 ```
 dotnet nuget add source https://nuget.pkg.github.com/Jimmacle/index.json --name visa-cs --username <github-user> --password <token with read:packages>

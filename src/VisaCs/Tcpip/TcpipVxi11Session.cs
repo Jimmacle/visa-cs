@@ -1,7 +1,7 @@
 using System.Net.Sockets;
 using VisaCs.Internal;
-using VisaCs.Protocols.Rpc;
-using VisaCs.Protocols.Vxi11;
+using VisaCs.Lan;
+using VisaCs.Lan.Rpc;
 
 namespace VisaCs;
 
@@ -22,6 +22,7 @@ namespace VisaCs;
 /// Only exclusive locks take the instrument's lock (<c>device_lock</c>); VXI-11 has no shared locks, so shared locks
 /// only exclude other sessions in this process.
 /// </para>
+/// <para>The protocol itself is <see cref="Vxi11Client"/> from <c>VisaCs.Lan</c>.</para>
 /// </remarks>
 public sealed class TcpipVxi11Session : TcpipInstrumentSession
 {
@@ -51,8 +52,8 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
     /// <inheritdoc/>
     public override bool KeepAlive
     {
-        get => NetUtil.GetKeepAlive(Client.CoreSocket);
-        set => NetUtil.SetKeepAlive(Client.CoreSocket, value);
+        get => Client.KeepAlive;
+        set => Client.KeepAlive = value;
     }
 
     private Vxi11Client Client => _client ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
@@ -66,8 +67,10 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
     private protected override async ValueTask OpenCoreAsync(int connectTimeoutMs, CancellationToken cancellationToken, bool async)
     {
         int clientId = Interlocked.Increment(ref _clientIdSeed);
-        _client = await Vxi11Client.ConnectAsync(Name.Host, Name.DeviceName, ResourceManager.Options.Vxi11PortmapperPort, clientId,
-            Deadline.FromMilliseconds(connectTimeoutMs).WithCancellation(cancellationToken), async).ConfigureAwait(false);
+        int port = ResourceManager.Options.Vxi11PortmapperPort;
+        _client = async
+            ? await Vxi11Client.ConnectAsync(Name.Host, Name.DeviceName, connectTimeoutMs, port, clientId, cancellationToken).ConfigureAwait(false)
+            : Vxi11Client.Connect(Name.Host, Name.DeviceName, connectTimeoutMs, port, clientId);
         Address = NetUtil.Normalize(_client.RemoteEndPoint.Address).ToString();
     }
 
@@ -76,7 +79,8 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         if (_client is null) return;
         if (ClosingWhileBusy) _client.Dispose();
         await StopInterruptChannelAsync(async).ConfigureAwait(false);
-        await _client.DestroyLinkAsync(1000, async).ConfigureAwait(false);
+        if (async) await _client.DestroyLinkAsync(1000).ConfigureAwait(false);
+        else _client.DestroyLink(1000);
         _client.Dispose();
     }
 
@@ -90,13 +94,18 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         }
     }
 
+    private async ValueTask<Vxi11WriteResult> DeviceWriteAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async) =>
+        async
+            ? await Client.WriteAsync(data, end, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+            : Client.Write(data, end, deadline.RemainingMilliseconds);
+
     private protected override async ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
     {
         if (data.IsEmpty)
         {
             if (!end) return;
-            var (error, _) = await Client.DeviceWriteAsync(ReadOnlyMemory<byte>.Empty, deadline, Vxi11Constants.FlagEnd, async).ConfigureAwait(false);
-            if (error != 0) throw Vxi11Constants.ToException(error, "device_write");
+            var (error, _) = await DeviceWriteAsync(ReadOnlyMemory<byte>.Empty, true, deadline, async).ConfigureAwait(false);
+            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_write");
             return;
         }
 
@@ -106,11 +115,10 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         {
             int n = Math.Min(chunk, data.Length - offset);
             bool last = offset + n >= data.Length;
-            int flags = last && end ? Vxi11Constants.FlagEnd : 0;
-            var (error, size) = await Client.DeviceWriteAsync(data.Slice(offset, n), deadline, flags, async).ConfigureAwait(false);
-            if (error != 0) throw Vxi11Constants.ToException(error, "device_write");
+            var (error, size) = await DeviceWriteAsync(data.Slice(offset, n), last && end, deadline, async).ConfigureAwait(false);
+            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_write");
             if (size == 0) deadline.ThrowIfExpired("device_write");
-            offset += (int)Math.Min(size, (uint)n);
+            offset += Math.Min(size, n);
         }
     }
 
@@ -119,13 +127,14 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         while (true)
         {
             int term = EffectiveTermChar;
-            int flags = term >= 0 ? Vxi11Constants.FlagTermCharSet : 0;
-            var (error, reason, data) = await Client.DeviceReadAsync((uint)target.Length, deadline, flags,
-                term >= 0 ? (byte)term : (byte)0, async).ConfigureAwait(false);
-            if (error != 0) throw Vxi11Constants.ToException(error, "device_read");
+            byte? termChar = term >= 0 ? (byte)term : null;
+            var (error, reason, data) = async
+                ? await Client.ReadAsync(target.Length, termChar, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : Client.Read(target.Length, termChar, deadline.RemainingMilliseconds);
+            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_read");
             int n = Math.Min(data.Length, target.Length);
             data.Span[..n].CopyTo(target.Span);
-            bool end = (reason & Vxi11Constants.ReasonEnd) != 0;
+            bool end = (reason & Vxi11ReadReasons.End) != 0;
             if (n > 0 || end) return new FillResult(n, end);
             deadline.ThrowIfExpired("device_read");
         }
@@ -133,38 +142,43 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
 
     private protected override async ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async)
     {
-        var (error, stb) = await Client.DeviceReadStbAsync(deadline, async).ConfigureAwait(false);
-        if (error != 0) throw Vxi11Constants.ToException(error, "device_readstb");
+        var (error, stb) = async
+            ? await Client.ReadStatusByteAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+            : Client.ReadStatusByte(deadline.RemainingMilliseconds);
+        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_readstb");
         return stb;
     }
 
     private protected override async ValueTask ClearCoreAsync(Deadline deadline, bool async)
     {
-        int error = await Client.DeviceClearAsync(deadline, async).ConfigureAwait(false);
-        if (error != 0) throw Vxi11Constants.ToException(error, "device_clear");
+        var error = async
+            ? await Client.ClearAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+            : Client.Clear(deadline.RemainingMilliseconds);
+        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_clear");
     }
 
     private protected override async ValueTask TriggerCoreAsync(Deadline deadline, bool async)
     {
-        int error = await Client.DeviceTriggerAsync(deadline, async).ConfigureAwait(false);
-        if (error != 0) throw Vxi11Constants.ToException(error, "device_trigger");
+        var error = async
+            ? await Client.TriggerAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+            : Client.Trigger(deadline.RemainingMilliseconds);
+        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_trigger");
     }
 
     private protected override async ValueTask ControlRenCoreAsync(RemoteLocalMode mode, Deadline deadline, bool async)
     {
-        int error = mode switch
+        bool remote = mode is RemoteLocalMode.Assert or RemoteLocalMode.AssertAddress or RemoteLocalMode.AssertLocalLockout or
+            RemoteLocalMode.AssertAddressLocalLockout;
+        int timeout = deadline.RemainingMilliseconds;
+        var token = deadline.CancellationToken;
+        var error = (remote, async) switch
         {
-            RemoteLocalMode.Assert or RemoteLocalMode.AssertAddress or RemoteLocalMode.AssertLocalLockout or
-                RemoteLocalMode.AssertAddressLocalLockout => await Client.DeviceRemoteAsync(deadline, async).ConfigureAwait(false),
-            _ => await Client.DeviceLocalAsync(deadline, async).ConfigureAwait(false),
+            (true, true) => await Client.RemoteAsync(timeout, token).ConfigureAwait(false),
+            (true, false) => Client.Remote(timeout),
+            (false, true) => await Client.LocalAsync(timeout, token).ConfigureAwait(false),
+            (false, false) => Client.Local(timeout),
         };
-        if (error != 0) throw Vxi11Constants.ToException(error, "device_remote/local");
-    }
-
-    private protected override void OnOperationCanceled()
-    {
-        // The pending core-channel call ends as soon as the device sees device_abort; its late reply is discarded.
-        _client?.BeginAbort();
+        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_remote/local");
     }
 
     /// <summary>
@@ -191,9 +205,11 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         ExecuteAsync((command, data, dataSize, networkOrder), static async (s, a, ct, async) =>
         {
             var session = (TcpipVxi11Session)s;
-            var (error, output) = await session.Client.DeviceDocmdAsync(a.command, a.networkOrder, a.dataSize, a.data,
-                session.NewDeadline(ct), async).ConfigureAwait(false);
-            if (error != 0) throw Vxi11Constants.ToException(error, "device_docmd");
+            int timeout = session.TimeoutMilliseconds;
+            var (error, output) = async
+                ? await session.Client.DoCommandAsync(a.command, a.data, a.dataSize, a.networkOrder, timeout, ct).ConfigureAwait(false)
+                : session.Client.DoCommand(a.command, a.data, a.dataSize, a.networkOrder, timeout);
+            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_docmd");
             return output;
         }, cancellationToken, async);
 
@@ -204,19 +220,23 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         if (type != LockType.Exclusive) return;
         // The instrument waits for the time this request has left: the caller may have waited for sessions in this
         // process already. A grant that arrives after the caller gave up is released by the client.
-        uint lockTimeout = timeoutMilliseconds < 0 ? int.MaxValue : (uint)deadline.RemainingMilliseconds;
-        int error = await Client.DeviceLockAsync(lockTimeout, deadline, async).ConfigureAwait(false);
-        if (error == Vxi11Constants.ErrDeviceLocked)
+        int lockTimeout = timeoutMilliseconds < 0 ? -1 : deadline.RemainingMilliseconds;
+        var error = async
+            ? await Client.LockAsync(lockTimeout, deadline.CancellationToken).ConfigureAwait(false)
+            : Client.Lock(lockTimeout);
+        if (error == Vxi11Error.DeviceLocked)
             throw new VisaTimeoutException("The device is locked by another VXI-11 link.");
-        if (error != 0) throw Vxi11Constants.ToException(error, "device_lock");
+        if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_lock");
     }
 
     private protected override async ValueTask ReleaseDeviceLockAsync(LockType type, CancellationToken cancellationToken, bool async)
     {
         // While closing, destroy_link (or the connection closing) releases the lock.
         if (type != LockType.Exclusive || _client is null || IsDisposed) return;
-        int error = await _client.DeviceUnlockAsync(Deadline.FromMilliseconds(5000).WithCancellation(cancellationToken), async).ConfigureAwait(false);
-        if (error != 0 && error != Vxi11Constants.ErrNoLockHeld) throw Vxi11Constants.ToException(error, "device_unlock");
+        var error = async
+            ? await _client.UnlockAsync(5000, cancellationToken).ConfigureAwait(false)
+            : _client.Unlock(5000);
+        if (error != Vxi11Error.None && error != Vxi11Error.NoLockHeld) throw Vxi11Errors.ToException(error, "device_unlock");
     }
 
     // VXI-11 service requests arrive as RPC calls from the instrument to an RPC server run by the client.
@@ -227,20 +247,28 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         if (local.AddressFamily != AddressFamily.InterNetwork)
             throw new VisaException(VisaStatus.ErrorOperationNotSupported, "VXI-11 service requests require an IPv4 connection.");
 
-        var server = new RpcTcpServer(local, 0, Vxi11Constants.InterruptProgram, Vxi11Constants.Version, HandleInterrupt, blockingHandlers: false);
+        var server = new RpcTcpServer(local, 0, Vxi11Protocol.InterruptProgram, Vxi11Protocol.Version, HandleInterrupt);
         server.Start();
         try
         {
             var deadline = Deadline.FromMilliseconds(Math.Max(TimeoutMilliseconds, 5000)).WithCancellation(cancellationToken);
-            int error = await Client.CreateInterruptChannelAsync(local, server.Port, deadline, async).ConfigureAwait(false);
-            if (error == Vxi11Constants.ErrChannelAlreadyEstablished)
+            var client = Client;
+            var error = async
+                ? await client.CreateInterruptChannelAsync(local, server.Port, deadline.RemainingMilliseconds, cancellationToken).ConfigureAwait(false)
+                : client.CreateInterruptChannel(local, server.Port, deadline.RemainingMilliseconds);
+            if (error == Vxi11Error.ChannelAlreadyEstablished)
             {
-                await Client.DestroyInterruptChannelAsync(deadline, async).ConfigureAwait(false);
-                error = await Client.CreateInterruptChannelAsync(local, server.Port, deadline, async).ConfigureAwait(false);
+                if (async) await client.DestroyInterruptChannelAsync(deadline.RemainingMilliseconds, cancellationToken).ConfigureAwait(false);
+                else client.DestroyInterruptChannel(deadline.RemainingMilliseconds);
+                error = async
+                    ? await client.CreateInterruptChannelAsync(local, server.Port, deadline.RemainingMilliseconds, cancellationToken).ConfigureAwait(false)
+                    : client.CreateInterruptChannel(local, server.Port, deadline.RemainingMilliseconds);
             }
-            if (error != 0) throw Vxi11Constants.ToException(error, "create_intr_chan");
-            error = await Client.DeviceEnableSrqAsync(true, _srqHandle, deadline, async).ConfigureAwait(false);
-            if (error != 0) throw Vxi11Constants.ToException(error, "device_enable_srq");
+            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "create_intr_chan");
+            error = async
+                ? await client.EnableServiceRequestsAsync(true, _srqHandle, deadline.RemainingMilliseconds, cancellationToken).ConfigureAwait(false)
+                : client.EnableServiceRequests(true, _srqHandle, deadline.RemainingMilliseconds);
+            if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "device_enable_srq");
             _interruptServer = server;
         }
         catch
@@ -250,13 +278,13 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         }
     }
 
-    private uint HandleInterrupt(RpcCallContext context, XdrReader args, XdrWriter results)
+    private RpcAcceptStatus HandleInterrupt(RpcCallContext context, XdrReader args, XdrWriter results)
     {
-        if (context.Procedure != Vxi11Constants.ProcDeviceIntrSrq) return OncRpc.AcceptProcUnavail;
+        if (context.Procedure != Vxi11Protocol.ProcDeviceIntrSrq) return RpcAcceptStatus.ProcedureUnavailable;
         var handle = args.ReadOpaqueSpan();
         if (handle.SequenceEqual(_srqHandle) || handle.IsEmpty)
             RaiseEvent(new ServiceRequestEventArgs());
-        return OncRpc.AcceptSuccess;
+        return RpcAcceptStatus.Success;
     }
 
     private protected override ValueTask OnEventDisabledAsync(EventType eventType, bool async) =>
@@ -270,8 +298,16 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         {
             if (ClosingWhileBusy) _client.Dispose();
             var deadline = Deadline.FromMilliseconds(2000);
-            await _client.DeviceEnableSrqAsync(false, _srqHandle, deadline, async).ConfigureAwait(false);
-            await _client.DestroyInterruptChannelAsync(deadline, async).ConfigureAwait(false);
+            if (async)
+            {
+                await _client.EnableServiceRequestsAsync(false, _srqHandle, deadline.RemainingMilliseconds).ConfigureAwait(false);
+                await _client.DestroyInterruptChannelAsync(deadline.RemainingMilliseconds).ConfigureAwait(false);
+            }
+            else
+            {
+                _client.EnableServiceRequests(false, _srqHandle, deadline.RemainingMilliseconds);
+                _client.DestroyInterruptChannel(deadline.RemainingMilliseconds);
+            }
         }
         catch
         {

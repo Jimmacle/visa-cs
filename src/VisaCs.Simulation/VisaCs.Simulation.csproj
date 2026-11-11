@@ -6,13 +6,24 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\VisaCs\VisaCs.csproj" />
+    <ProjectReference Include="..\VisaCs.Lan\VisaCs.Lan.csproj" />
   </ItemGroup>
-
-  <!-- The simulator uses VisaCs internals (InternalsVisibleTo), so its package requires exactly the same VisaCs version
-       instead of NuGet's default "this version or later". -->
-  <Target Name="PinVisaCsVersion" AfterTargets="_GetProjectReferenceVersions">
-    <ItemGroup>
-      <_ProjectReferencesWithVersions Update="@(_ProjectReferencesWithVersions)" ProjectVersion="[%(ProjectVersion)]" />
-    </ItemGroup>
-  </Target>
+  <ItemGroup>
+    <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
+    <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
+    <Compile Include="..\Shared\ChangeSignal.cs" Link="Internal\ChangeSignal.cs" />
+    <Compile Include="..\Shared\NetUtil.cs" Link="Internal\NetUtil.cs" />
+  </ItemGroup>
+  <!-- The server side of HiSLIP reuses the client's wire code (framing, channels with the TLS switch, SASL helpers).
+       These files declare only internal types and depend only on src/Shared and public types, so they are compiled
+       in here as well instead of growing VisaCs.Lan's public API with server internals. -->
+  <ItemGroup>
+    <Compile Include="..\VisaCs.Lan\Internal\LanErrors.cs" Link="Internal\LanErrors.cs" />
+    <Compile Include="..\VisaCs.Lan\Internal\SemaphoreDeadlineExtensions.cs" Link="Internal\SemaphoreDeadlineExtensions.cs" />
+    <Compile Include="..\VisaCs.Lan\Hislip\Hislip.cs" Link="Hislip\Hislip.cs" />
+    <Compile Include="..\VisaCs.Lan\Hislip\HislipChannel.cs" Link="Hislip\HislipChannel.cs" />
+    <Compile Include="..\VisaCs.Lan\Hislip\TlsHislipChannel.cs" Link="Hislip\TlsHislipChannel.cs" />
+    <Compile Include="..\VisaCs.Lan\Hislip\TlsRecordBoundaryStream.cs" Link="Hislip\TlsRecordBoundaryStream.cs" />
+    <Compile Include="..\VisaCs.Lan\Hislip\Sasl.cs" Link="Hislip\Sasl.cs" />
+  </ItemGroup>
 </Project>

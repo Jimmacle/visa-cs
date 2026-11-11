@@ -18,12 +18,13 @@ public sealed class PackageLayoutTests
         typeof(IGpibDriver).Assembly,
         typeof(VisaFormatter).Assembly,
         typeof(PciRegion).Assembly,
+        typeof(Lan.HislipClient).Assembly,
     ];
 
     [Fact]
     public void ComponentLibrariesStandAlone()
     {
-        Assert.Equal(6, Components.Distinct().Count());
+        Assert.Equal(Components.Length, Components.Distinct().Count());
         foreach (var assembly in Components)
         {
             // The framework and VisaCs.Primitives only: never VisaCs itself or another component library.

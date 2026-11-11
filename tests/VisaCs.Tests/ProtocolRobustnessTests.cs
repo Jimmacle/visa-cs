@@ -3,9 +3,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using VisaCs.Internal;
-using VisaCs.Protocols.Hislip;
-using VisaCs.Protocols.Rpc;
+using VisaCs.Lan.Rpc;
 using VisaCs.Simulation;
 
 namespace VisaCs.Tests;
@@ -52,8 +50,7 @@ public sealed class ProtocolRobustnessTests(HislipSecurityFixture certificates)
         listener.Start();
         var accept = listener.AcceptSocketAsync();
         // Generous: on a busy CI machine the connect's completion can wait for a thread-pool thread.
-        using var client = AsyncIO.Complete(RpcTcpClient.ConnectAsync((IPEndPoint)listener.LocalEndpoint, 0x0607AF, 1,
-            Deadline.FromMilliseconds(10_000), async: false));
+        using var client = RpcTcpClient.Connect((IPEndPoint)listener.LocalEndpoint, 0x0607AF, 1, 10_000);
         using var peer = await accept; // never reads
 
         // Fill the socket buffers. Calls that were sent completely time out waiting for a reply (the connection stays
@@ -62,10 +59,10 @@ public sealed class ProtocolRobustnessTests(HislipSecurityFixture certificates)
         var data = new byte[8 * 1024 * 1024];
         Exception? ex = null;
         for (int i = 0; i < 64 && ex?.Message.Contains("partly sent") != true; i++)
-            ex = await Record.ExceptionAsync(async () => await client.CallAsync(11, w => w.WriteOpaque(data), Deadline.FromMilliseconds(300), async: true));
+            ex = await Record.ExceptionAsync(async () => await client.CallAsync(11, w => w.WriteOpaque(data), 300));
         Assert.IsType<VisaTimeoutException>(ex);
         Assert.Contains("partly sent", ex.Message);
-        var next = await Assert.ThrowsAsync<VisaException>(async () => await client.CallAsync(13, null, Deadline.FromMilliseconds(500), async: true));
+        var next = await Assert.ThrowsAsync<VisaException>(async () => await client.CallAsync(13, null, 500));
         Assert.Equal(VisaStatus.ErrorConnectionLost, next.Status);
     }
 
@@ -221,23 +218,6 @@ public sealed class ProtocolRobustnessTests(HislipSecurityFixture certificates)
         Assert.Equal(1, server.FailedAuthenticationCount); // PLAIN was never tried with the rejected password
     }
 
-    [Fact]
-    public void RejectsMalformedScramChallenges()
-    {
-        var badSalt = new ScramSha256ClientMechanism("user", "pencil", null, channelBindingAvailable: false, nonce: "abc");
-        badSalt.InitialResponse();
-        Assert.Equal(SecurityFailure.Authentication,
-            Assert.Throws<VisaSecurityException>(() => badSalt.Respond(Encoding.UTF8.GetBytes("r=abcdef,s=not base64!,i=4096"))).Failure);
-
-        var tooMany = new ScramSha256ClientMechanism("user", "pencil", null, channelBindingAvailable: false, nonce: "abc");
-        tooMany.InitialResponse();
-        Assert.Throws<VisaSecurityException>(() => tooMany.Respond(Encoding.UTF8.GetBytes("r=abcdef,s=AAAA,i=2000000000")));
-
-        var sameNonce = new ScramSha256ClientMechanism("user", "pencil", null, channelBindingAvailable: false, nonce: "abc");
-        sameNonce.InitialResponse();
-        Assert.Throws<VisaSecurityException>(() => sameNonce.Respond(Encoding.UTF8.GetBytes("r=abc,s=AAAA,i=4096")));
-    }
-
     // ------------------------------------------------------------------ XDR
 
     [Fact]
@@ -255,6 +235,15 @@ public sealed class ProtocolRobustnessTests(HislipSecurityFixture certificates)
     /// </summary>
     private sealed class StalledHislipServer : IDisposable
     {
+        private enum HislipMessageType : byte
+        {
+            InitializeResponse = 1,
+            AsyncMaximumMessageSize = 15,
+            AsyncMaximumMessageSizeResponse = 16,
+            AsyncInitializeResponse = 18,
+            AsyncStatusResponse = 22,
+        }
+
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
         private readonly List<Socket> _sockets = new();
 
@@ -302,14 +291,16 @@ public sealed class ProtocolRobustnessTests(HislipSecurityFixture certificates)
             }
         }
 
+        private const int HeaderSize = 16;
+
         private static async Task<(HislipMessageType Type, byte[] Payload)> ReceiveMessageAsync(Socket socket)
         {
-            var header = new byte[Hislip.HeaderSize];
+            var header = new byte[HeaderSize];
             await ReceiveExactAsync(socket, header);
-            var h = Hislip.ParseHeader(header);
-            var payload = new byte[(int)h.PayloadLength];
+            if (header[0] != 'H' || header[1] != 'S') throw new IOException("Bad HiSLIP prologue.");
+            var payload = new byte[(int)BinaryPrimitives.ReadUInt64BigEndian(header.AsSpan(8))];
             await ReceiveExactAsync(socket, payload);
-            return (h.Type, payload);
+            return ((HislipMessageType)header[2], payload);
         }
 
         private static async Task ReceiveExactAsync(Socket socket, byte[] buffer)
@@ -325,9 +316,14 @@ public sealed class ProtocolRobustnessTests(HislipSecurityFixture certificates)
 
         private static async Task SendAsync(Socket socket, HislipMessageType type, byte control, uint parameter, byte[] payload)
         {
-            var message = new byte[Hislip.HeaderSize + payload.Length];
-            Hislip.WriteHeader(message, type, control, parameter, (ulong)payload.Length);
-            payload.CopyTo(message, Hislip.HeaderSize);
+            var message = new byte[HeaderSize + payload.Length];
+            message[0] = (byte)'H';
+            message[1] = (byte)'S';
+            message[2] = (byte)type;
+            message[3] = control;
+            BinaryPrimitives.WriteUInt32BigEndian(message.AsSpan(4), parameter);
+            BinaryPrimitives.WriteUInt64BigEndian(message.AsSpan(8), (ulong)payload.Length);
+            payload.CopyTo(message, HeaderSize);
             await socket.SendAsync(message);
         }
 

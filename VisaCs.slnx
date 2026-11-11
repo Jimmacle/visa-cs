@@ -11,6 +11,7 @@
     <Project Path="src/VisaCs.Formatting/VisaCs.Formatting.csproj" />
     <Project Path="src/VisaCs.Gpib/VisaCs.Gpib.csproj" />
     <Project Path="src/VisaCs.Pci/VisaCs.Pci.csproj" />
+    <Project Path="src/VisaCs.Lan/VisaCs.Lan.csproj" />
     <Project Path="src/VisaCs.Primitives/VisaCs.Primitives.csproj" />
     <Project Path="src/VisaCs.Serial/VisaCs.Serial.csproj" />
     <Project Path="src/VisaCs.Simulation/VisaCs.Simulation.csproj" />
@@ -18,6 +19,7 @@
     <Project Path="src/VisaCs/VisaCs.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/VisaCs.Lan.Tests/VisaCs.Lan.Tests.csproj" />
     <Project Path="tests/VisaCs.Tests/VisaCs.Tests.csproj" />
   </Folder>
 </Solution>

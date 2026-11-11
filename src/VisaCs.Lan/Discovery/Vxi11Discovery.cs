@@ -1,19 +1,40 @@
 using System.Net;
 using System.Net.Sockets;
 using VisaCs.Internal;
-using VisaCs.Protocols.Rpc;
-using VisaCs.Protocols.Vxi11;
+using VisaCs.Lan.Rpc;
 
-namespace VisaCs.Discovery;
+namespace VisaCs.Lan;
 
-/// <summary>Finds VXI-11 instruments by broadcasting a portmapper GETPORT request for the VXI-11 core program.</summary>
-internal static class Vxi11Discovery
+/// <summary>
+/// Finds VXI-11 instruments by sending a portmapper GETPORT request for the VXI-11 core program over UDP, as broadcast
+/// on every IPv4 interface and to given addresses, and collecting the hosts that answer.
+/// </summary>
+public static class Vxi11Discovery
 {
-    public static List<IPAddress> Discover(int timeoutMs, int portmapperPort, IEnumerable<IPAddress> extraTargets, bool broadcast = true) =>
-        AsyncIO.Complete(DiscoverAsync(timeoutMs, portmapperPort, extraTargets, broadcast, CancellationToken.None, async: false));
+    /// <summary>
+    /// Sends the query and collects the addresses that answer for <paramref name="timeoutMs"/> milliseconds.
+    /// </summary>
+    /// <param name="timeoutMs">How long to listen for answers.</param>
+    /// <param name="portmapperPort">The portmapper port to query.</param>
+    /// <param name="targets">Addresses queried directly (unicast), in addition to the broadcast; may be null.</param>
+    /// <param name="broadcast">Whether to broadcast the query on every IPv4 interface.</param>
+    public static IReadOnlyList<IPAddress> Discover(int timeoutMs, int portmapperPort = Portmapper.DefaultPort, IEnumerable<IPAddress>? targets = null,
+        bool broadcast = true) =>
+        AsyncIO.Complete(DiscoverAsync(timeoutMs, portmapperPort, targets, broadcast, CancellationToken.None, async: false));
 
-    /// <summary>Broadcasts the query and collects replies until the timeout (or until <paramref name="cancellationToken"/> fires).</summary>
-    public static async ValueTask<List<IPAddress>> DiscoverAsync(int timeoutMs, int portmapperPort, IEnumerable<IPAddress> extraTargets,
+    /// <summary>
+    /// Like <see cref="Discover"/>, without holding a thread while waiting for answers. Cancelling
+    /// <paramref name="cancellationToken"/> ends the wait early with <see cref="OperationCanceledException"/>.
+    /// </summary>
+    public static async Task<IReadOnlyList<IPAddress>> DiscoverAsync(int timeoutMs, int portmapperPort = Portmapper.DefaultPort,
+        IEnumerable<IPAddress>? targets = null, bool broadcast = true, CancellationToken cancellationToken = default)
+    {
+        var result = await DiscoverAsync(timeoutMs, portmapperPort, targets, broadcast, cancellationToken, async: true).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return result;
+    }
+
+    private static async ValueTask<IReadOnlyList<IPAddress>> DiscoverAsync(int timeoutMs, int portmapperPort, IEnumerable<IPAddress>? extraTargets,
         bool broadcast, CancellationToken cancellationToken, bool async)
     {
         var found = new List<IPAddress>();
@@ -21,9 +42,9 @@ internal static class Vxi11Discovery
         socket.EnableBroadcast = true;
         socket.Bind(new IPEndPoint(IPAddress.Any, 0));
         uint xid = OncRpc.NewXidBase();
-        var datagram = Portmapper.BuildGetPortDatagram(xid, Vxi11Constants.CoreProgram, Vxi11Constants.Version);
+        var datagram = Portmapper.BuildGetPortDatagram(xid, Vxi11Protocol.CoreProgram, Vxi11Protocol.Version);
 
-        var targets = new HashSet<IPAddress>(extraTargets);
+        var targets = new HashSet<IPAddress>(extraTargets ?? []);
         if (broadcast)
         {
             targets.Add(IPAddress.Broadcast);

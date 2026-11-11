@@ -2,7 +2,6 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using VisaCs.Discovery;
 
 namespace VisaCs.Simulation;
 
@@ -142,7 +141,7 @@ public sealed class MdnsTestResponder : IDisposable
         var result = new List<string>();
         for (int i = 0; i < count; i++)
         {
-            result.Add(MdnsDiscovery.ReadName(message, ref offset));
+            result.Add(ReadName(message, ref offset));
             offset += 4;
         }
         return result;
@@ -162,14 +161,14 @@ public sealed class MdnsTestResponder : IDisposable
             string instance = s.Instance + "." + type;
             string host = s.Host + ".local";
 
-            WriteRecord(ms, type, 12, w => MdnsDiscovery.WriteName(w, instance));
+            WriteRecord(ms, type, 12, w => WriteName(w, instance));
             WriteRecord(ms, instance, 33, w =>
             {
                 Span<byte> srv = stackalloc byte[6];
                 srv.Clear();
                 BinaryPrimitives.WriteUInt16BigEndian(srv[4..], (ushort)s.Port);
                 w.Write(srv);
-                MdnsDiscovery.WriteName(w, host);
+                WriteName(w, host);
             });
             WriteRecord(ms, instance, 16, w =>
             {
@@ -186,9 +185,50 @@ public sealed class MdnsTestResponder : IDisposable
         return ms.ToArray();
     }
 
+    /// <summary>Writes an uncompressed DNS name.</summary>
+    private static void WriteName(Stream stream, string name)
+    {
+        foreach (var label in name.TrimEnd('.').Split('.'))
+        {
+            var bytes = Encoding.UTF8.GetBytes(label);
+            stream.WriteByte((byte)bytes.Length);
+            stream.Write(bytes);
+        }
+        stream.WriteByte(0);
+    }
+
+    /// <summary>Reads a possibly compressed DNS name.</summary>
+    private static string ReadName(byte[] message, ref int offset)
+    {
+        var labels = new List<string>();
+        int position = offset;
+        bool jumped = false;
+        for (int guard = 0; guard < 128; guard++)
+        {
+            int length = message[position];
+            if (length == 0)
+            {
+                position++;
+                break;
+            }
+            if ((length & 0xC0) == 0xC0)
+            {
+                int pointer = ((length & 0x3F) << 8) | message[position + 1];
+                if (!jumped) offset = position + 2;
+                jumped = true;
+                position = pointer;
+                continue;
+            }
+            labels.Add(Encoding.UTF8.GetString(message, position + 1, length));
+            position += length + 1;
+        }
+        if (!jumped) offset = position;
+        return string.Join('.', labels);
+    }
+
     private static void WriteRecord(MemoryStream ms, string name, ushort type, Action<Stream> writeData)
     {
-        MdnsDiscovery.WriteName(ms, name);
+        WriteName(ms, name);
         var data = new MemoryStream();
         writeData(data);
         Span<byte> fixedPart = stackalloc byte[10];

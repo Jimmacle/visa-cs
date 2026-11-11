@@ -20,12 +20,12 @@ public enum HislipEncryptionMode
 
 /// <summary>
 /// Credentials and policy for HiSLIP 2.0 secure connections (TLS plus SASL client authentication, IVI-6.1 and IVI-6.5).
-/// Set on <see cref="ResourceManagerOptions.HislipSecurity"/>.
+/// Pass it to <see cref="VisaCs.Lan.HislipClient.Connect"/>, or set it on <c>ResourceManagerOptions.HislipSecurity</c>.
 /// </summary>
 /// <remarks>
-/// A session reads these options when it opens, and again when <see cref="TcpipHislipSession.SetEncryptionEnabled"/>
-/// starts encryption on an open session; later changes affect only those later uses. The object is not thread-safe:
-/// configure it before sessions use it.
+/// A client reads these options when it connects, and again when it starts encryption on an open connection
+/// (<see cref="VisaCs.Lan.HislipClient.EstablishSecureConnection"/>); later changes affect only those later uses. The
+/// object is not thread-safe: configure it before clients use it.
 /// </remarks>
 public sealed class HislipSecurityOptions
 {
@@ -39,7 +39,7 @@ public sealed class HislipSecurityOptions
     public NetworkCredential? Credentials { get; set; }
 
     /// <summary>
-    /// Per-host credentials, keyed by the host as written in the resource name (case-insensitive). Consulted first.
+    /// Per-host credentials, keyed by the host as passed to the client (as written in the resource name) (case-insensitive). Consulted first.
     /// </summary>
     public IDictionary<string, NetworkCredential> HostCredentials { get; } =
         new Dictionary<string, NetworkCredential>(StringComparer.OrdinalIgnoreCase);

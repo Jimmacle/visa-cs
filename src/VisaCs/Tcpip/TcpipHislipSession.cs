@@ -3,7 +3,7 @@ using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using VisaCs.Internal;
-using VisaCs.Protocols.Hislip;
+using VisaCs.Lan;
 
 namespace VisaCs;
 
@@ -21,10 +21,11 @@ namespace VisaCs;
 /// VI_ERROR_CONN_LOST, when a write is cut off after part of a message was sent, when the server reports a fatal
 /// error, and when changing the encryption fails; reopen the session then.
 /// </para>
+/// <para>The protocol itself is <see cref="HislipClient"/> from <c>VisaCs.Lan</c>.</para>
 /// </remarks>
 public sealed class TcpipHislipSession : TcpipInstrumentSession
 {
-    private HislipConnection? _connection;
+    private HislipClient? _client;
 
     internal TcpipHislipSession(ResourceManager manager, TcpipInstrumentResourceName name)
         : base(manager, name, inputBufferSize: 256 * 1024)
@@ -41,25 +42,25 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
     /// Negotiated HiSLIP protocol version, e.g. 0x0100 for 1.0 (VI_ATTR_TCPIP_HISLIP_VERSION): the lower of the
     /// server's and this client's (2.0).
     /// </summary>
-    public int ProtocolVersion => Connection.NegotiatedProtocolVersion;
+    public int ProtocolVersion => Client.ProtocolVersion;
 
     /// <summary>Session ID assigned by the server.</summary>
-    public int SessionId => Connection.SessionId;
+    public int SessionId => Client.SessionId;
 
     /// <summary>Two-character vendor ID reported by the server.</summary>
-    public string ServerVendorId => new([(char)(Connection.ServerVendorId >> 8), (char)(Connection.ServerVendorId & 0xFF)]);
+    public string ServerVendorId => new([(char)(Client.ServerVendorId >> 8), (char)(Client.ServerVendorId & 0xFF)]);
 
     /// <summary>
     /// Largest message the server accepts, in bytes (from its AsyncMaximumMessageSizeResponse); <see cref="ulong.MaxValue"/>
     /// if the server did not answer. Writes are split into Data messages that fit (at most 64 MiB each).
     /// </summary>
-    public ulong ServerMaximumMessageSize => Connection.ServerMaxMessageSize;
+    public ulong ServerMaximumMessageSize => Client.ServerMaximumMessageSize;
 
     /// <summary>
     /// Overlapped mode (VI_ATTR_TCPIP_HISLIP_OVERLAP_EN); false means synchronized mode. Change it with
     /// <see cref="SetOverlapEnabled"/>.
     /// </summary>
-    public bool OverlapEnabled => Connection.OverlapMode;
+    public bool OverlapEnabled => Client.OverlapMode;
 
     /// <summary>
     /// Requests overlapped or synchronized mode with a device clear (which also discards unread input). The server
@@ -76,7 +77,7 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
         {
             var session = (TcpipHislipSession)s;
             session.DiscardInputBuffer();
-            await session.Connection.DeviceClearAsync(enabled, session.NewDeadline(ct), async).ConfigureAwait(false);
+            await session.DeviceClearAsync(enabled, session.NewDeadline(ct), async).ConfigureAwait(false);
             return true;
         }, cancellationToken, async).ConfigureAwait(false);
 
@@ -101,7 +102,9 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
         ArgumentOutOfRangeException.ThrowIfLessThan(kilobytes, 1);
         await RunAsyncChannelAsync(kilobytes, static async (session, kilobytes, deadline, async) =>
         {
-            await session.Connection.SetClientMaximumMessageSizeAsync((ulong)kilobytes * 1024, deadline, async).ConfigureAwait(false);
+            ulong size = (ulong)kilobytes * 1024;
+            if (async) await session.Client.SetMaximumMessageSizeAsync(size, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false);
+            else session.Client.SetMaximumMessageSize(size, deadline.RemainingMilliseconds);
             session.MaximumMessageKB = kilobytes;
             return true;
         }, cancellationToken, async).ConfigureAwait(false);
@@ -110,84 +113,116 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
     /// <inheritdoc/>
     public override bool KeepAlive
     {
-        get => NetUtil.GetKeepAlive(Connection.SyncSocket);
-        set
-        {
-            NetUtil.SetKeepAlive(Connection.SyncSocket, value);
-            NetUtil.SetKeepAlive(Connection.AsyncSocket, value);
-        }
+        get => Client.KeepAlive;
+        set => Client.KeepAlive = value;
     }
 
-    private HislipConnection Connection => _connection ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
+    private HislipClient Client => _client ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
 
     private protected override async ValueTask OpenCoreAsync(int connectTimeoutMs, CancellationToken cancellationToken, bool async)
     {
         Port = Name.HislipPort ?? ResourceManager.Options.HislipPort;
-        _connection = await HislipConnection.ConnectAsync(Name.Host, Port, Name.HislipSubAddress,
-            Deadline.FromMilliseconds(connectTimeoutMs).WithCancellation(cancellationToken), (ulong)MaximumMessageKB * 1024,
-            ResourceManager.Options.HislipSecurity, async).ConfigureAwait(false);
-        _connection.ServiceRequest += stb => RaiseEvent(new ServiceRequestEventArgs(stb));
-        Address = NetUtil.RemoteAddressText(_connection.SyncSocket);
+        ulong maximumMessageSize = (ulong)MaximumMessageKB * 1024;
+        var security = ResourceManager.Options.HislipSecurity;
+        _client = async
+            ? await HislipClient.ConnectAsync(Name.Host, Port, Name.HislipSubAddress, connectTimeoutMs, security, maximumMessageSize,
+                cancellationToken).ConfigureAwait(false)
+            : HislipClient.Connect(Name.Host, Port, Name.HislipSubAddress, connectTimeoutMs, security, maximumMessageSize);
+        _client.ServiceRequest += stb => RaiseEvent(new ServiceRequestEventArgs(stb));
+        Address = _client.RemoteAddress.ToString();
     }
 
     private protected override ValueTask CloseCoreAsync(bool async)
     {
-        _connection?.Dispose();
+        _client?.Dispose();
         return default;
     }
 
     private protected override ValueTask WriteCoreAsync(ReadOnlyMemory<byte> data, bool end, Deadline deadline, bool async)
     {
         // In synchronized mode, unread response data becomes stale once a new message is sent.
-        if (!Connection.OverlapMode) DiscardInputBuffer();
-        return Connection.WriteAsync(data, end, deadline, async);
+        if (!Client.OverlapMode) DiscardInputBuffer();
+        if (async) return Client.WriteAsync(data, end, deadline.RemainingMilliseconds, deadline.CancellationToken);
+        Client.Write(data, end, deadline.RemainingMilliseconds);
+        return default;
     }
 
-    private protected override ValueTask<FillResult> FillCoreAsync(Memory<byte> target, Deadline deadline, bool async) =>
-        Connection.FillAsync(target, deadline, async);
+    private protected override async ValueTask<FillResult> FillCoreAsync(Memory<byte> target, Deadline deadline, bool async)
+    {
+        var (count, end) = async
+            ? await Client.ReadAsync(target, deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+            : Client.Read(target, deadline.RemainingMilliseconds);
+        return new FillResult(count, end);
+    }
 
     private protected override void OnReadCompleted(ReadStatus status)
     {
-        if (status == ReadStatus.EndReceived) Connection.NotifyRmtDelivered();
+        if (status == ReadStatus.EndReceived) Client.MarkResponseDelivered();
     }
 
     private protected override ValueTask<byte> ReadStatusByteCoreAsync(Deadline deadline, bool async) =>
-        Connection.ReadStatusByteAsync(deadline, async);
+        async
+            ? Client.ReadStatusByteAsync(deadline.RemainingMilliseconds, deadline.CancellationToken)
+            : new(Client.ReadStatusByte(deadline.RemainingMilliseconds));
 
-    private protected override ValueTask ClearCoreAsync(Deadline deadline, bool async) => Connection.DeviceClearAsync(null, deadline, async);
+    private ValueTask DeviceClearAsync(bool? requestOverlap, Deadline deadline, bool async)
+    {
+        if (async) return Client.DeviceClearAsync(deadline.RemainingMilliseconds, requestOverlap, deadline.CancellationToken);
+        Client.DeviceClear(deadline.RemainingMilliseconds, requestOverlap);
+        return default;
+    }
+
+    private protected override ValueTask ClearCoreAsync(Deadline deadline, bool async) => DeviceClearAsync(null, deadline, async);
 
     private protected override ValueTask TriggerCoreAsync(Deadline deadline, bool async)
     {
-        if (!Connection.OverlapMode) DiscardInputBuffer();
-        return Connection.TriggerAsync(deadline, async);
+        if (!Client.OverlapMode) DiscardInputBuffer();
+        if (async) return Client.TriggerAsync(deadline.RemainingMilliseconds, deadline.CancellationToken);
+        Client.Trigger(deadline.RemainingMilliseconds);
+        return default;
     }
 
-    private protected override ValueTask ControlRenCoreAsync(RemoteLocalMode mode, Deadline deadline, bool async) =>
-        Connection.RemoteLocalAsync(mode, deadline, async);
+    private protected override ValueTask ControlRenCoreAsync(RemoteLocalMode mode, Deadline deadline, bool async)
+    {
+        // HiSLIP's remote/local control codes are VISA's VI_GPIB_REN_* values.
+        var control = (HislipRemoteLocalMode)mode;
+        if (async) return Client.RemoteLocalAsync(control, deadline.RemainingMilliseconds, deadline.CancellationToken);
+        Client.RemoteLocal(control, deadline.RemainingMilliseconds);
+        return default;
+    }
 
-    private protected override ValueTask AcquireDeviceLockAsync(LockType type, string? key, int timeoutMilliseconds, Deadline deadline, bool async) =>
-        Connection.LockAsync(type == LockType.Exclusive ? "" : key ?? "", timeoutMilliseconds, deadline, async);
+    private protected override ValueTask AcquireDeviceLockAsync(LockType type, string? key, int timeoutMilliseconds, Deadline deadline, bool async)
+    {
+        // The server waits for the time this request has left: the caller may have waited for sessions in this process.
+        string? sharedKey = type == LockType.Exclusive ? null : key ?? "";
+        int timeout = timeoutMilliseconds < 0 ? -1 : deadline.RemainingMilliseconds;
+        if (async) return Client.LockAsync(sharedKey, timeout, deadline.CancellationToken);
+        Client.Lock(sharedKey, timeout);
+        return default;
+    }
 
     private protected override ValueTask ReleaseDeviceLockAsync(LockType type, CancellationToken cancellationToken, bool async)
     {
         // While closing, closing the connection releases the server's locks.
-        if (_connection is null || _connection.IsClosed || IsDisposed) return default;
-        return _connection.UnlockAsync(Deadline.FromMilliseconds(5000).WithCancellation(cancellationToken), async);
+        if (_client is null || _client.IsClosed || IsDisposed) return default;
+        if (async) return _client.UnlockAsync(5000, cancellationToken);
+        _client.Unlock(5000);
+        return default;
     }
 
     // ------------------------------------------------------------------ HiSLIP 2.0 security
 
     /// <summary>The server supports HiSLIP 2.0 secure connections (TLS + SASL).</summary>
-    public bool SecureConnectionSupported => Connection.SecureConnectionSupported;
+    public bool SecureConnectionSupported => Client.SecureConnectionSupported;
 
     /// <summary>The server only accepts encrypted connections; <see cref="SetEncryptionEnabled"/>(false) then fails.</summary>
-    public bool EncryptionMandatory => Connection.EncryptionMandatory;
+    public bool EncryptionMandatory => Client.EncryptionMandatory;
 
     /// <summary>
     /// Whether the connection is encrypted (VI_ATTR_TCPIP_HISLIP_ENCRYPTION_EN). <see cref="ResourceManagerOptions.HislipSecurity"/>
     /// decides at open time; <see cref="SetEncryptionEnabled"/> changes it on an open session.
     /// </summary>
-    public bool EncryptionEnabled => Connection.IsEncrypted;
+    public bool EncryptionEnabled => Client.IsEncrypted;
 
     /// <summary>
     /// Starts or ends encryption on the open session. Starting performs the HiSLIP 2.0 Establish Secure Connection
@@ -211,27 +246,40 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
         await ExecuteAsync(enabled, static async (s, enabled, ct, async) =>
         {
             var session = (TcpipHislipSession)s;
-            if (enabled == session.Connection.IsEncrypted) return true;
+            var client = session.Client;
+            if (enabled == client.IsEncrypted) return true;
             session.DiscardInputBuffer();
-            if (enabled)
-                await session.Connection.EstablishSecureConnectionAsync(session.ResourceManager.Options.HislipSecurity, session.NewDeadline(ct), async)
-                    .ConfigureAwait(false);
-            else
-                await session.Connection.EndSecureConnectionAsync(session.NewDeadline(ct), async).ConfigureAwait(false);
+            int timeout = session.TimeoutMilliseconds;
+            var security = session.ResourceManager.Options.HislipSecurity;
+            switch (enabled, async)
+            {
+                case (true, true):
+                    await client.EstablishSecureConnectionAsync(security, timeout, ct).ConfigureAwait(false);
+                    break;
+                case (true, false):
+                    client.EstablishSecureConnection(security, timeout);
+                    break;
+                case (false, true):
+                    await client.EndSecureConnectionAsync(timeout, ct).ConfigureAwait(false);
+                    break;
+                default:
+                    client.EndSecureConnection(timeout);
+                    break;
+            }
             return true;
         }, cancellationToken, async).ConfigureAwait(false);
 
     /// <summary>The SASL mechanism used to authenticate, e.g. SCRAM-SHA-256-PLUS (VI_ATTR_TCPIP_SASL_MECHANISM); null when not encrypted.</summary>
-    public string? SaslMechanism => Connection.SaslMechanism;
+    public string? SaslMechanism => Client.SaslMechanism;
 
     /// <summary>The negotiated TLS cipher suite (VI_ATTR_TCPIP_TLS_CIPHER_SUITE, which holds its IANA name); null when not encrypted.</summary>
-    public TlsCipherSuite? TlsCipherSuite => Connection.CipherSuite;
+    public TlsCipherSuite? TlsCipherSuite => Client.CipherSuite;
 
     /// <summary>The negotiated TLS protocol version; null when not encrypted.</summary>
-    public SslProtocols? TlsProtocol => Connection.TlsProtocol;
+    public SslProtocols? TlsProtocol => Client.TlsProtocol;
 
     /// <summary>The server's X.509 certificate; null when not encrypted. Owned by the session: do not dispose it.</summary>
-    public X509Certificate2? ServerCertificate => Connection.ServerCertificate;
+    public X509Certificate2? ServerCertificate => Client.ServerCertificate;
 
     /// <summary>Reads the server's HiSLIP 2.0 descriptors (supported TLS versions, TLS information, last TLS error).</summary>
     /// <exception cref="VisaException">VI_ERROR_NSUP_OPER with a HiSLIP 1.0 server.</exception>
@@ -243,7 +291,10 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
         GetDescriptorsAsync(cancellationToken, async: true).AsTask();
 
     private ValueTask<IReadOnlyList<HislipDescriptor>> GetDescriptorsAsync(CancellationToken cancellationToken, bool async) =>
-        RunAsyncChannelAsync(0, static (session, _, deadline, async) => session.Connection.GetDescriptorsAsync(deadline, async), cancellationToken, async);
+        RunAsyncChannelAsync(0, static (session, _, deadline, async) =>
+            async
+                ? session.Client.GetDescriptorsAsync(deadline.RemainingMilliseconds, deadline.CancellationToken)
+                : new(session.Client.GetDescriptors(deadline.RemainingMilliseconds)), cancellationToken, async);
 
     /// <summary>
     /// Queries the server's lock state (AsyncLockInfo): whether any client holds the exclusive lock, and how many
@@ -259,8 +310,10 @@ public sealed class TcpipHislipSession : TcpipInstrumentSession
     private ValueTask<(bool ExclusiveLockGranted, int ClientsHoldingLocks)> GetLockInfoAsync(CancellationToken cancellationToken, bool async) =>
         RunAsyncChannelAsync(0, static async (session, _, deadline, async) =>
         {
-            var (exclusive, count) = await session.Connection.LockInfoAsync(deadline, async).ConfigureAwait(false);
-            return (exclusive, (int)count);
+            var info = async
+                ? await session.Client.GetLockInfoAsync(deadline.RemainingMilliseconds, deadline.CancellationToken).ConfigureAwait(false)
+                : session.Client.GetLockInfo(deadline.RemainingMilliseconds);
+            return (info.ExclusiveLockGranted, info.ClientsHoldingLocks);
         }, cancellationToken, async);
 
     /// <summary>

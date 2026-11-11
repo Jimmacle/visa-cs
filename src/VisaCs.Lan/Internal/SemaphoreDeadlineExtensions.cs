@@ -1,6 +1,5 @@
-using VisaCs.Internal;
 
-namespace VisaCs.Protocols;
+namespace VisaCs.Internal;
 
 /// <summary>Waiting for a <see cref="SemaphoreSlim"/> used as a request gate, bounded by the caller's deadline.</summary>
 internal static class SemaphoreDeadlineExtensions
@@ -38,6 +37,6 @@ internal static class SemaphoreDeadlineExtensions
     public static async ValueTask EnterOrThrowAsync(this SemaphoreSlim gate, Deadline deadline, bool async, string what)
     {
         if (!await gate.EnterAsync(deadline, async).ConfigureAwait(false))
-            throw new VisaTimeoutException($"Timed out waiting for {what} to finish.");
+            throw LanErrors.Timeout($"Timed out waiting for {what} to finish.");
     }
 }

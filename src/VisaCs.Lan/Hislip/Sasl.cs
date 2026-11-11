@@ -1,7 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
+using VisaCs.Internal;
 
-namespace VisaCs.Protocols.Hislip;
+namespace VisaCs.Lan.Protocols;
 
 /// <summary>A client-side SASL mechanism (RFC 4422).</summary>
 internal interface ISaslClientMechanism
@@ -114,15 +115,15 @@ internal sealed class ScramSha256ClientMechanism : ISaslClientMechanism
         string serverFirst = Encoding.UTF8.GetString(challenge);
         var fields = ScramFields.Parse(serverFirst);
         if (fields.TryGetValue('e', out var error))
-            throw new VisaSecurityException(SecurityFailure.Authentication, $"SCRAM error from the server: {error}");
+            throw LanErrors.Security(SecurityFailure.Authentication, $"SCRAM error from the server: {error}");
         if (fields.ContainsKey('m'))
-            throw new VisaSecurityException(SecurityFailure.Authentication, "The SCRAM server-first message requires an unsupported extension.");
+            throw LanErrors.Security(SecurityFailure.Authentication, "The SCRAM server-first message requires an unsupported extension.");
         if (!fields.TryGetValue('r', out var nonce) || nonce.Length <= _clientNonce.Length || !nonce.StartsWith(_clientNonce, StringComparison.Ordinal) ||
             !fields.TryGetValue('s', out var saltText) || !fields.TryGetValue('i', out var iterationText) ||
             !int.TryParse(iterationText, out int iterations) || iterations < 1)
-            throw new VisaSecurityException(SecurityFailure.Authentication, "Invalid SCRAM server-first message.");
+            throw LanErrors.Security(SecurityFailure.Authentication, "Invalid SCRAM server-first message.");
         if (iterations > MaxIterations)
-            throw new VisaSecurityException(SecurityFailure.Authentication,
+            throw LanErrors.Security(SecurityFailure.Authentication,
                 $"The server asks for {iterations} SCRAM iterations; at most {MaxIterations} are accepted.");
         byte[] salt;
         try
@@ -131,7 +132,7 @@ internal sealed class ScramSha256ClientMechanism : ISaslClientMechanism
         }
         catch (FormatException ex)
         {
-            throw new VisaSecurityException(SecurityFailure.Authentication, "Invalid SCRAM server-first message (salt).", ex);
+            throw LanErrors.Security(SecurityFailure.Authentication, "Invalid SCRAM server-first message (salt).", ex);
         }
 
         byte[] salted = Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(Sasl.Prepare(_password)), salt, iterations, HashAlgorithmName.SHA256, 32);

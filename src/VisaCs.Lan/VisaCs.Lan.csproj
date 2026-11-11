@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>VisaCs.Lan</RootNamespace>
+    <Description>LAN instrument protocols without a VISA library: ONC RPC (XDR, portmapper), VXI-11, HiSLIP 2.0 (TLS and SASL), VICP, and mDNS / VXI-11 broadcast discovery.</Description>
+    <PackageTags>vxi11;hislip;vicp;onc-rpc;mdns;lxi;scpi;instrument</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\VisaCs.Primitives\VisaCs.Primitives.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\AsyncIO.cs" Link="Internal\AsyncIO.cs" />
+    <Compile Include="..\Shared\Deadline.cs" Link="Internal\Deadline.cs" />
+    <Compile Include="..\Shared\ChangeSignal.cs" Link="Internal\ChangeSignal.cs" />
+    <Compile Include="..\Shared\NetUtil.cs" Link="Internal\NetUtil.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="VisaCs.Lan.Tests" />
+  </ItemGroup>
+</Project>

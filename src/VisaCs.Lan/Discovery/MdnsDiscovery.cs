@@ -4,14 +4,36 @@ using System.Net.Sockets;
 using System.Text;
 using VisaCs.Internal;
 
-namespace VisaCs.Discovery;
+namespace VisaCs.Lan;
 
 /// <summary>A DNS-SD service instance found with mDNS.</summary>
-internal sealed record MdnsServiceInstance(string ServiceType, string InstanceName, string HostName, int Port,
+/// <param name="ServiceType">The service type it was found under, e.g. <c>_hislip._tcp.local</c>.</param>
+/// <param name="InstanceName">The instance name without the service type, e.g. <c>Keysight DSOX1204G</c>.</param>
+/// <param name="HostName">The target host of its SRV record, e.g. <c>scope.local.</c>.</param>
+/// <param name="Port">The port of its SRV record.</param>
+/// <param name="Addresses">The host's addresses sent with the answer; may be empty.</param>
+/// <param name="Text">The key/value pairs of its TXT record (keys case-insensitive).</param>
+public sealed record MdnsServiceInstance(string ServiceType, string InstanceName, string HostName, int Port,
     IReadOnlyList<IPAddress> Addresses, IReadOnlyDictionary<string, string> Text);
 
-/// <summary>Minimal one-shot mDNS / DNS-SD browser (RFC 6762/6763) used to find LXI instruments.</summary>
-internal static class MdnsDiscovery
+/// <summary>DNS-SD service types that instruments advertise.</summary>
+public static class MdnsServiceTypes
+{
+    /// <summary>LXI instruments (web interface).</summary>
+    public const string Lxi = "_lxi._tcp.local";
+    /// <summary>HiSLIP servers.</summary>
+    public const string Hislip = "_hislip._tcp.local";
+    /// <summary>VXI-11 servers.</summary>
+    public const string Vxi11 = "_vxi-11._tcp.local";
+    /// <summary>Raw SCPI sockets.</summary>
+    public const string ScpiRaw = "_scpi-raw._tcp.local";
+}
+
+/// <summary>
+/// One-shot mDNS / DNS-SD browser (RFC 6762/6763) for finding LAN instruments: sends one query on every IPv4
+/// interface and collects the answers until the timeout.
+/// </summary>
+public static class MdnsDiscovery
 {
     /// <summary>The mDNS multicast group and port (224.0.0.251:5353).</summary>
     public static IPEndPoint MulticastEndPoint => new(IPAddress.Parse("224.0.0.251"), 5353);
@@ -19,8 +41,9 @@ internal static class MdnsDiscovery
     private const ushort TypeA = 1, TypePtr = 12, TypeTxt = 16, TypeAaaa = 28, TypeSrv = 33, ClassIn = 1;
 
     /// <summary>
-    /// Sends one query for the given service types (e.g. <c>_hislip._tcp.local</c>) and collects answers until the timeout.
-    /// <paramref name="target"/> overrides the multicast destination (useful for testing against a unicast responder).
+    /// Sends one query for the given service types (see <see cref="MdnsServiceTypes"/>) and collects the answers for
+    /// <paramref name="timeoutMs"/> milliseconds. <paramref name="target"/> overrides the multicast destination (for
+    /// example a unicast responder in a test).
     /// </summary>
     public static IReadOnlyList<MdnsServiceInstance> Browse(IReadOnlyList<string> serviceTypes, int timeoutMs, IPEndPoint? target = null) =>
         AsyncIO.Complete(BrowseAsync(serviceTypes, timeoutMs, target, CancellationToken.None, async: false));
@@ -40,6 +63,7 @@ internal static class MdnsDiscovery
     private static async ValueTask<IReadOnlyList<MdnsServiceInstance>> BrowseAsync(IReadOnlyList<string> serviceTypes, int timeoutMs,
         IPEndPoint? target, CancellationToken cancellationToken, bool async)
     {
+        ArgumentNullException.ThrowIfNull(serviceTypes);
         var query = BuildQuery(serviceTypes);
         var sockets = new List<Socket>();
         try
