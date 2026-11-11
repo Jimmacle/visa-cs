@@ -15,6 +15,12 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
     private const int HeaderSize = 12;
     private const int Timeout = 5000;
     protected const int NoLimit = System.Threading.Timeout.Infinite;
+
+    /// <summary>DELAY? for transfers that must time out or be cancelled first: far beyond their 100-200 ms limits.</summary>
+    private const int SlowResponseMilliseconds = 3000;
+
+    /// <summary>For the query after a DELAY?: the instrument runs commands in order, so it waits for the rest of it.</summary>
+    private const int RecoveryTimeout = 10_000;
     private static int _tag;
 
     protected UsbIpFixture Fixture { get; } = fixture;
@@ -106,10 +112,10 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         return Encoding.ASCII.GetString(buffer, HeaderSize, size).TrimEnd('\n');
     }
 
-    protected static async Task<string> QueryAsync(Connection c, string query)
+    protected static async Task<string> QueryAsync(Connection c, string query, int timeoutMilliseconds = Timeout)
     {
         await SendAsync(c, query + "\n");
-        return await ReadResponseAsync(c);
+        return await ReadResponseAsync(c, timeoutMilliseconds: timeoutMilliseconds);
     }
 
     /// <summary>USBTMC INITIATE_CLEAR and CHECK_CLEAR_STATUS, then CLEAR_FEATURE(ENDPOINT_HALT) on bulk-OUT.</summary>
@@ -221,8 +227,8 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         using var c = Connect();
         int unlinks = Fixture.Server!.UnlinkCount;
 
-        // The device answers after 800 ms; the read gives up after 200 ms.
-        await SendAsync(c, "DELAY? 800\n");
+        // The device answers after 3 s; the read gives up after 200 ms.
+        await SendAsync(c, $"DELAY? {SlowResponseMilliseconds}\n");
         byte tag = NextTag();
         await c.Handle.BulkTransferAsync(c.BulkOut, RequestDevDepMsgIn(tag, 256), Timeout);
         var buffer = new byte[512];
@@ -231,9 +237,9 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         Assert.InRange(watch.ElapsedMilliseconds, 150, 3000);
         Assert.True(Fixture.Server.UnlinkCount > unlinks, "The kernel did not cancel the bulk-IN URB.");
 
-        // Recover the way the USBTMC layer does after a timeout, then the device works again.
+        // Recover the way the USBTMC layer does after a timeout, then the device works again (once the DELAY? is over).
         await DeviceClearAsync(c);
-        Assert.Equal(Fixture.Instrument.Identity, await QueryAsync(c, "*IDN?"));
+        Assert.Equal(Fixture.Instrument.Identity, await QueryAsync(c, "*IDN?", RecoveryTimeout));
     }
 
     [Fact]
@@ -255,13 +261,13 @@ public abstract class UsbBackendAsyncTests(UsbIpFixture fixture)
         Assert.Equal(Fixture.Instrument.Identity, await QueryAsync(c, "*IDN?"));
 
         // Cancelled while a response is on its way; a device clear discards it.
-        await SendAsync(c, "DELAY? 300\n");
+        await SendAsync(c, $"DELAY? {SlowResponseMilliseconds}\n");
         await c.Handle.BulkTransferAsync(c.BulkOut, RequestDevDepMsgIn(NextTag(), 256), Timeout);
         using var cts2 = new CancellationTokenSource(100);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
             await c.Handle.BulkTransferAsync(c.BulkIn, buffer, Timeout, cts2.Token));
         await DeviceClearAsync(c);
-        Assert.Equal(Fixture.Instrument.Identity, await QueryAsync(c, "*IDN?"));
+        Assert.Equal(Fixture.Instrument.Identity, await QueryAsync(c, "*IDN?", RecoveryTimeout));
 
         // An already cancelled token does not start a transfer.
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>

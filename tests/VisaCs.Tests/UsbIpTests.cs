@@ -200,9 +200,9 @@ public sealed class UsbFsKernelTests(UsbIpFixture fixture) : MessageBasedProtoco
         using var rm = CreateResourceManager();
         using var session = rm.Open(Resource);
         session.TimeoutMilliseconds = 200;
-        Assert.Throws<VisaTimeoutException>(() => session.Query("DELAY? 600"));
+        Assert.Throws<VisaTimeoutException>(() => session.Query($"DELAY? {SlowResponseMilliseconds}"));
         Assert.True(fixture.Server.UnlinkCount > unlinks, "The kernel did not cancel the pending bulk-in URB.");
-        session.TimeoutMilliseconds = 5000;
+        session.TimeoutMilliseconds = RecoveryTimeoutMilliseconds;
         session.Clear();
         Assert.Equal(Instrument.Identity, session.Query("*IDN?"));
     }

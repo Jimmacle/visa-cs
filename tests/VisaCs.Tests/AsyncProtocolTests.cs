@@ -77,11 +77,11 @@ public abstract partial class MessageBasedProtocolTests
         await using var rm = CreateResourceManager();
         await using var session = await OpenAsync(rm);
         session.TimeoutMilliseconds = 300;
-        var ex = await Assert.ThrowsAsync<VisaTimeoutException>(() => session.QueryAsync("DELAY? 800"));
+        var ex = await Assert.ThrowsAsync<VisaTimeoutException>(() => session.QueryAsync($"DELAY? {SlowResponseMilliseconds}"));
         Assert.Equal(VisaStatus.ErrorTimeout, ex.Status);
-        // Raw sockets cannot clear the device: wait for the late response, which Clear then discards.
-        if (!HasEndIndicator) await Task.Delay(900);
-        session.TimeoutMilliseconds = 5000;
+        session.TimeoutMilliseconds = RecoveryTimeoutMilliseconds;
+        // Raw sockets cannot clear the device, and Clear only discards what has arrived: take the late response first.
+        if (!HasEndIndicator) Assert.Equal("DONE", await session.ReadLineAsync());
         await session.ClearAsync();
         Assert.Equal(Instrument.Identity, await session.QueryAsync("*IDN?"));
     }

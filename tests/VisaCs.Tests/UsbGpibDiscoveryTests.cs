@@ -142,9 +142,9 @@ public sealed class UsbTmcTests(UsbFixture fixture) : MessageBasedProtocolTests
         using var rm = CreateResourceManager();
         using var session = Open(rm);
         session.TimeoutMilliseconds = 200;
-        Assert.Throws<VisaTimeoutException>(() => session.Query("DELAY? 600"));
+        Assert.Throws<VisaTimeoutException>(() => session.Query($"DELAY? {SlowResponseMilliseconds}"));
         Assert.True(device.AbortCount > aborts);
-        session.TimeoutMilliseconds = 5000;
+        session.TimeoutMilliseconds = RecoveryTimeoutMilliseconds;
         session.Clear();
         Assert.Equal(Instrument.Identity, session.Query("*IDN?"));
     }

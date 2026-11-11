@@ -54,6 +54,18 @@ public abstract partial class MessageBasedProtocolTests
     /// </summary>
     protected virtual bool CancelsPromptly => true;
 
+    /// <summary>
+    /// How long DELAY? keeps the instrument busy in the tests that expect a timeout or cancellation. It is far beyond
+    /// the 300 ms timeout so that a stalled (loaded CI) machine cannot let the response arrive in time.
+    /// </summary>
+    protected const int SlowResponseMilliseconds = 3000;
+
+    /// <summary>
+    /// Timeout for recovering after a slow response: the instrument executes commands in order, so the next query (and a
+    /// HiSLIP device clear) can wait for the rest of the DELAY?. Covers that plus a wide margin.
+    /// </summary>
+    protected const int RecoveryTimeoutMilliseconds = 10_000;
+
     protected MessageBasedSession Open(ResourceManager rm)
     {
         var session = rm.Open(Resource);
@@ -235,15 +247,17 @@ public abstract partial class MessageBasedProtocolTests
     }
 
     [Fact]
-    public virtual void TimesOutAndRecovers()
+    public void TimesOutAndRecovers()
     {
         if (!Enabled) return;
         using var rm = CreateResourceManager();
         using var session = Open(rm);
         session.TimeoutMilliseconds = 300;
-        var ex = Assert.Throws<VisaTimeoutException>(() => session.Query("DELAY? 1200"));
+        var ex = Assert.Throws<VisaTimeoutException>(() => session.Query($"DELAY? {SlowResponseMilliseconds}"));
         Assert.Equal(VisaStatus.ErrorTimeout, ex.Status);
-        session.TimeoutMilliseconds = 5000;
+        session.TimeoutMilliseconds = RecoveryTimeoutMilliseconds;
+        // Raw sockets cannot clear the device, and Clear only discards what has arrived: take the late response first.
+        if (!HasEndIndicator) Assert.Equal("DONE", session.ReadLine());
         session.Clear();
         Assert.Equal(Instrument.Identity, session.Query("*IDN?"));
     }
@@ -272,13 +286,12 @@ public abstract partial class MessageBasedProtocolTests
         session.TimeoutMilliseconds = 10_000;
         using var cts = new CancellationTokenSource(200);
         var started = DateTime.UtcNow;
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.QueryAsync("DELAY? 1500", cts.Token));
-        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(1.2), "Cancellation did not interrupt the read.");
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.QueryAsync($"DELAY? {SlowResponseMilliseconds}", cts.Token));
+        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(2.5), "Cancellation did not interrupt the read.");
 
-        // Let the late response arrive, then discard it as after a timeout.
-        await Task.Delay(1600);
+        // Recover as after a timeout.
+        if (!HasEndIndicator) Assert.Equal("DONE", session.ReadLine());
         session.Clear();
-        session.TimeoutMilliseconds = 5000;
         Assert.Equal(Instrument.Identity, session.Query("*IDN?"));
     }
 
@@ -725,19 +738,6 @@ public sealed class SocketTests(SimulatorFixture fixture) : MessageBasedProtocol
     protected override SimulatedInstrument Instrument => fixture.Instrument;
     protected override bool HasEndIndicator => false;
     protected override bool SupportsServiceRequest => false;
-
-    public override void TimesOutAndRecovers()
-    {
-        using var rm = CreateResourceManager();
-        using var session = Open(rm);
-        session.TimeoutMilliseconds = 300;
-        Assert.Throws<VisaTimeoutException>(() => session.Query("DELAY? 800"));
-        // Sockets cannot clear the device: wait for the late response and discard it.
-        Thread.Sleep(900);
-        session.Clear();
-        session.TimeoutMilliseconds = 5000;
-        Assert.Equal(Instrument.Identity, session.Query("*IDN?"));
-    }
 
     [Fact]
     public void EnablesTermCharByDefault()

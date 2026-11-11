@@ -108,12 +108,12 @@ public sealed class GpibNativeDriverTests
 
         // A timeout and a cancellation both leave the session usable.
         session.TimeoutMilliseconds = 200;
-        await Assert.ThrowsAsync<VisaTimeoutException>(() => session.QueryAsync("DELAY? 1000 slow").WaitAsync(Patience));
+        await Assert.ThrowsAsync<VisaTimeoutException>(() => session.QueryAsync("DELAY? 3000 slow").WaitAsync(Patience));
         session.TimeoutMilliseconds = 5000;
         await session.ClearAsync().WaitAsync(Patience);
         using (var cts = new CancellationTokenSource(200))
         {
-            var slow = session.QueryAsync("DELAY? 1000 slow", cts.Token).WaitAsync(Patience);
+            var slow = session.QueryAsync("DELAY? 3000 slow", cts.Token).WaitAsync(Patience);
             // Without ibrda a transfer runs as a blocking driver call that cannot be stopped once it has started.
             if (HasAsyncCalls) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => slow);
             else Assert.Equal("slow", await slow);
@@ -320,7 +320,7 @@ public sealed class GpibNativeDriverTests
         Assert.Equal("FAKE,GPIB,22,1.0\n", await QueryAsync(device, "*IDN?"));
 
         // Cancelling while the answer is on its way.
-        await WriteAsync(device, "DELAY? 300 slow\n");
+        await WriteAsync(device, "DELAY? 3000 slow\n");
         using var soon = new CancellationTokenSource(100);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
             await device.ReadAsync(new byte[64], null, 5000, soon.Token).AsTask().WaitAsync(Patience));
