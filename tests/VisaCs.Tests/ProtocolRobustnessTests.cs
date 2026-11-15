@@ -359,6 +359,31 @@ public sealed class Vxi11RobustnessTests(SimulatorFixture fixture) : IClassFixtu
     }
 
     [Fact]
+    public async Task ClosingDestroysTheLinkOnInstrumentsThatKeepLinksOfClosedConnections()
+    {
+        // Like the Rigol DHO800 series: only destroy_link frees a link, closing the connection does not.
+        using var sim = new InstrumentSimulator().Start();
+        sim.Vxi11.KeepLinksOnDisconnect = true;
+        using var rm = new ResourceManager(sim.CreateOptions());
+
+        var idle = rm.Open<TcpipVxi11Session>(sim.Vxi11Resource);
+        Assert.Equal(sim.Instrument.Identity, idle.Query("*IDN?"));
+        idle.Dispose();
+        Assert.Equal(0, sim.Vxi11.LinkCount);
+
+        // Closed while a read is in progress on another thread: the link goes away over a new connection.
+        var busy = rm.Open<TcpipVxi11Session>(sim.Vxi11Resource);
+        busy.TimeoutMilliseconds = -1;
+        var query = Task.Run(() => busy.Query("DELAY? 4000"));
+        await Task.Delay(300);
+        var watch = Stopwatch.StartNew();
+        busy.Dispose();
+        Assert.True(watch.ElapsedMilliseconds < 2000, $"Closing took {watch.ElapsedMilliseconds} ms.");
+        await Assert.ThrowsAnyAsync<VisaException>(() => query);
+        Assert.Equal(0, sim.Vxi11.LinkCount);
+    }
+
+    [Fact]
     public async Task ReleasesALockGrantedAfterTheRequestWasCancelled()
     {
         using var rm = fixture.CreateResourceManager();

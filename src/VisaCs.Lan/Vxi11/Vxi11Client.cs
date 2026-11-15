@@ -33,16 +33,23 @@ public sealed class Vxi11Client : IDisposable
 
     private const int AbortTimeoutMs = 2000;
 
+    /// <summary>Time <see cref="Dispose"/> spends on destroy_link, including a new connection when it needs one.</summary>
+    private const int DisposeDestroyTimeoutMs = 1000;
+
     private readonly RpcTcpClient _core;
+    private readonly IPEndPoint _coreEndPoint;
     private readonly IPAddress _address;
     private RpcTcpClient? _abort;
     private readonly SemaphoreSlim _abortGate = new(1, 1);
     private Task _pendingAbort = Task.CompletedTask;
     private volatile bool _disposed;
+    private bool _hasLink;
+    private int _linkReleased;
 
     private Vxi11Client(RpcTcpClient core, IPAddress address)
     {
         _core = core;
+        _coreEndPoint = core.RemoteEndPoint;
         _address = address;
     }
 
@@ -122,6 +129,7 @@ public sealed class Vxi11Client : IDisposable
             uint maxRecv = r.ReadUInt32();
             if (error != Vxi11Error.None) throw Vxi11Errors.ToException(error, "create_link");
             client.LinkId = linkId;
+            client._hasLink = true;
             client.AbortPort = (int)(abortPort & 0xFFFF);
             client.MaxReceiveSize = maxRecv;
             await client.ConnectAbortChannelAsync(deadline, async).ConfigureAwait(false);
@@ -307,11 +315,17 @@ public sealed class Vxi11Client : IDisposable
     /// <summary>device_abort; see <see cref="Abort"/>.</summary>
     public ValueTask<Vxi11Error> AbortAsync() => AbortCoreAsync(async: true);
 
-    /// <summary>destroy_link, best effort (errors are ignored). Dispose the client afterwards.</summary>
-    public void DestroyLink(int timeoutMilliseconds) => AsyncIO.Complete(DestroyLinkCoreAsync(timeoutMilliseconds, async: false));
+    /// <summary>
+    /// destroy_link, best effort (errors are ignored); only the first call sends it. When the core connection is
+    /// already broken, it is sent over a new connection. Dispose the client afterwards. <see cref="Dispose"/> calls it
+    /// too, with a 1 s timeout.
+    /// </summary>
+    public void DestroyLink(int timeoutMilliseconds) =>
+        AsyncIO.Complete(ReleaseLinkAsync(Deadline.FromMilliseconds(timeoutMilliseconds), sameConnection: true, async: false));
 
     /// <summary>destroy_link, best effort; see <see cref="DestroyLink"/>.</summary>
-    public ValueTask DestroyLinkAsync(int timeoutMilliseconds) => DestroyLinkCoreAsync(timeoutMilliseconds, async: true);
+    public ValueTask DestroyLinkAsync(int timeoutMilliseconds) =>
+        ReleaseLinkAsync(Deadline.FromMilliseconds(timeoutMilliseconds), sameConnection: true, async: true);
 
     // ------------------------------------------------------------------ implementation
 
@@ -526,24 +540,57 @@ public sealed class Vxi11Client : IDisposable
         }
     }
 
-    private async ValueTask DestroyLinkCoreAsync(int timeoutMs, bool async)
+    /// <summary>
+    /// Sends destroy_link once, best effort: on the core connection when <paramref name="sameConnection"/> is true and
+    /// that works, otherwise over a new connection to the core channel (VXI-11 does not tie a link to its connection).
+    /// </summary>
+    private async ValueTask ReleaseLinkAsync(Deadline deadline, bool sameConnection, bool async)
     {
+        if (!_hasLink || Interlocked.Exchange(ref _linkReleased, 1) != 0) return;
+        if (sameConnection && !_disposed)
+        {
+            try
+            {
+                await CoreCallAsync(Vxi11Protocol.ProcDestroyLink, w => w.WriteInt32(LinkId), deadline, async).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception ex) when (LanErrors.IsLanError(ex))
+            {
+                // The connection is broken (or the device did not answer in time): try a new connection below.
+            }
+        }
+        if (deadline.HasExpired) return;
         try
         {
-            await CoreCallAsync(Vxi11Protocol.ProcDestroyLink, w => w.WriteInt32(LinkId), Deadline.FromMilliseconds(timeoutMs), async)
+            using var core = await RpcTcpClient.ConnectAsync(_coreEndPoint, Vxi11Protocol.CoreProgram, Vxi11Protocol.Version, deadline, async)
                 .ConfigureAwait(false);
+            await core.CallAsync(Vxi11Protocol.ProcDestroyLink, w => w.WriteInt32(LinkId), deadline, async).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex) when (LanErrors.IsLanError(ex))
         {
             // Best effort during close.
         }
     }
 
-    /// <summary>Closes the connections (the device then destroys the link and releases its locks).</summary>
+    /// <summary>
+    /// Destroys the link (destroy_link, best effort, at most 1 s) unless <see cref="DestroyLink"/> already did, and
+    /// closes the connections. When a call is in progress on another thread, closing the connection ends that call
+    /// first and destroy_link goes over a new connection.
+    /// </summary>
+    /// <remarks>
+    /// VXI-11 servers should destroy a link when its connection closes, but some keep it until destroy_link
+    /// (the Rigol DHO800 series does, and accepts only two links), so a client that only closed the connection would use
+    /// up the instrument's links.
+    /// </remarks>
     public void Dispose()
     {
+        if (_disposed) return;
+        var deadline = Deadline.FromMilliseconds(DisposeDestroyTimeoutMs);
+        bool busy = _core.IsBusy;
+        if (!busy) AsyncIO.Complete(ReleaseLinkAsync(deadline, sameConnection: true, async: false));
         _disposed = true;
         _core.Dispose();
         _abort?.Dispose();
+        if (busy) AsyncIO.Complete(ReleaseLinkAsync(deadline, sameConnection: false, async: false));
     }
 }

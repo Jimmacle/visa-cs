@@ -57,6 +57,35 @@ public sealed class ClientTests(SimulatorFixture fixture) : IClassFixture<Simula
     }
 
     [Fact]
+    public async Task Vxi11DisposeDestroysTheLink()
+    {
+        // An instrument that keeps links of closed connections (like the Rigol DHO800 series) needs destroy_link.
+        using var sim = new InstrumentSimulator().Start();
+        sim.Vxi11.KeepLinksOnDisconnect = true;
+        int port = sim.Vxi11.PortmapperPort;
+
+        var idle = Vxi11Client.Connect("127.0.0.1", "inst0", Timeout, port);
+        Assert.Equal(1, sim.Vxi11.LinkCount);
+        idle.Dispose();
+        Assert.Equal(0, sim.Vxi11.LinkCount);
+        idle.Dispose();
+
+        // DestroyLink first: Dispose does not send it again.
+        var destroyed = await Vxi11Client.ConnectAsync("127.0.0.1", "inst0", Timeout, port);
+        await destroyed.DestroyLinkAsync(Timeout);
+        Assert.Equal(0, sim.Vxi11.LinkCount);
+        destroyed.Dispose();
+
+        // Disposed while a read waits on another thread: the read ends and the link goes away over a new connection.
+        var busy = Vxi11Client.Connect("127.0.0.1", "inst0", Timeout, port);
+        var read = Task.Run(() => busy.Read(1024, null, 30_000));
+        await Task.Delay(300);
+        busy.Dispose();
+        await Assert.ThrowsAnyAsync<LanException>(() => read);
+        Assert.Equal(0, sim.Vxi11.LinkCount);
+    }
+
+    [Fact]
     public void Vxi11ErrorsBecomeLanExceptions()
     {
         var timeout = Assert.IsType<LanTimeoutException>(Vxi11Errors.ToException(Vxi11Error.IOTimeout, "device_read"));

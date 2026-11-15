@@ -68,6 +68,13 @@ public sealed class Vxi11InstrumentServer : IDisposable
     /// <summary>True while a link holds the instrument in remote state.</summary>
     public bool IsRemote { get; private set; }
 
+    /// <summary>
+    /// When true, links outlive their connection and only destroy_link removes them, as on instruments that do not
+    /// clean up after a closed connection (the Rigol DHO800 series). Default false: closing a connection destroys its
+    /// links, as VXI-11 requires.
+    /// </summary>
+    public bool KeepLinksOnDisconnect { get; set; }
+
     /// <summary>Number of links currently open.</summary>
     public int LinkCount
     {
@@ -541,6 +548,7 @@ public sealed class Vxi11InstrumentServer : IDisposable
         {
             foreach (int lid in state.Links)
             {
+                if (KeepLinksOnDisconnect) break;
                 _links.Remove(lid);
                 if (_lockOwner == lid) _lockOwner = null;
             }
