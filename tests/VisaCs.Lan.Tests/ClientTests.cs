@@ -57,6 +57,24 @@ public sealed class ClientTests(SimulatorFixture fixture) : IClassFixture<Simula
     }
 
     [Fact]
+    public async Task Vxi11CancellationWithoutAbortWaitsForTheDevice()
+    {
+        using var sim = new InstrumentSimulator().Start();
+        using var client = await Vxi11Client.ConnectAsync("127.0.0.1", "inst0", Timeout, sim.Vxi11.PortmapperPort);
+        client.AbortOnCancel = false;
+        // Nothing to read: the device holds the read until its io_timeout (2 s) passes.
+        using var cts = new CancellationTokenSource(300);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await client.ReadAsync(1024, null, 2000, cts.Token));
+        Assert.Equal(0, sim.Vxi11.AbortCount);
+        // The next call is answered once the device has ended the abandoned read; its late reply is discarded.
+        await client.WriteAsync("*IDN?\n"u8.ToArray(), true, Timeout);
+        var read = await client.ReadAsync(1024, null, Timeout);
+        Assert.Equal(Vxi11Error.None, read.Error);
+        Assert.Equal(sim.Instrument.Identity + "\n", Encoding.ASCII.GetString(read.Data.Span));
+        Assert.Equal(0, sim.Vxi11.AbortCount);
+    }
+
+    [Fact]
     public async Task Vxi11DisposeDestroysTheLink()
     {
         // An instrument that keeps links of closed connections (like the Rigol DHO800 series) needs destroy_link.

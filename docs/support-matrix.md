@@ -86,17 +86,20 @@ ways, `:SYST:ERR?` after each step). The instrument's own deviations from VXI-11
 | Area | Confirmed |
 |---|---|
 | Discovery | `Vxi11Discovery` broadcast and `ResourceManager.FindResources` with a unicast target and broadcast off find the instrument; portmapper `GETPORT` over TCP |
-| `Vxi11Client` | `create_link` (an unknown device name is refused: `InvalidRequest`), `device_write`/`device_read` with END, reads in 8-byte pieces, `device_readstb`, `device_trigger`, `device_clear`, `device_remote`, `device_local`, `device_lock`/`device_unlock` seen by a second link, `destroy_link` on `Dispose` (no link left behind after a full run) |
-| VXI-11 session | `Query`, `Query<T>`, `QueryAsync`; `Read` reporting `EndReceived` and `MaximumCountReached` (then the rest of the same response); `ReadChunkSize` 7; `Printf`/`Queryf`/`Scanf`; `QueryAsciiValues`; `QueryBinaryValues<byte>`/`<ushort>`; binary blocks containing 0x0A with the termination character on and off; a 10,000,000-byte block in one read (7.2 MiB/s); 1 M-point WORD blocks; read timeout honored by the instrument (`io_timeout`, 1000 ms → 1005 ms) and the session usable afterwards; timeout 0; `ControlRen` (all four modes); exclusive lock blocks another link's I/O and lock (`DeviceLocked`), and is visible as `VI_ERROR_RSRC_LOCKED` to a session while another link holds it; `EnableEvent(ServiceRequest)` reports the instrument's lack of an interrupt channel as `VI_ERROR_NSUP_OPER`; opening a third session fails with `VI_ERROR_ALLOC` (the instrument's two-link limit) |
-| Socket session | `Query`, binary blocks (10,000,000 bytes in one read at 10.3 MiB/s, byte-identical to the VXI-11 read of the same capture), PNG screenshots (blocks with 0x0A bytes, termination character on), `ReadStatusByte` through `*STB?`, read timeout then recovery, cancelling `ReadStringAsync` then `Clear()`, `Clear()` discarding a late reply, process-local exclusive lock |
+| `Vxi11Client` | `create_link` (an unknown device name is refused: `InvalidRequest`), `device_write`/`device_read` with END, reads in 8-byte pieces, `device_readstb`, `device_trigger`, `device_clear`, `device_remote`, `device_local`, `device_lock`/`device_unlock` seen by a second link, `destroy_link` on `Dispose` (32 open/close cycles leave all 16 of the instrument's links available; no link left behind after a full run), `Dispose` from another thread ends a waiting read with `ConnectionLost` |
+| VXI-11 session | `Query`, `Query<T>`, `QueryAsync` (50 concurrent calls on one session, each reply matched to its query); `Read` reporting `EndReceived` and `MaximumCountReached` (then the rest of the same response); `ReadChunkSize` 7; a 70,000-byte write split at `MaxReceiveSize` (65,536); `Printf`/`Queryf`/`Scanf`; `QueryAsciiValues` (preamble, 1000-point ASCII waveform); `QueryBinaryValues<byte>`/`<ushort>`; `WriteBinaryBlock` (a saved setup written back restores it); binary blocks containing 0x0A with the termination character on and off; a 10,000,000-byte block in one read (7.5 MiB/s, the same for `ReadChunkSize` 4 KiB to 4 MiB); 1 M-point WORD blocks; read timeout honored by the instrument (`io_timeout`, 1000 ms → 1005 ms); after a timeout in a slow response, `ReadToEnd` collects the rest and the session goes on; timeout 0; cancelling with `Vxi11AbortOnCancel = false` (the next query waits for the instrument, then works); `Clear()` with nothing pending; `ControlRen` (all four modes); exclusive lock blocks another link's I/O and lock (`DeviceLocked`), and is visible as `VI_ERROR_RSRC_LOCKED` to a session while another link holds it; `EnableEvent(ServiceRequest)` reports the instrument's lack of an interrupt channel as `VI_ERROR_NSUP_OPER`; `Dispose` from another thread ends a waiting read with `VI_ERROR_CONN_LOST`; every supported attribute reads (27) |
+| Socket session | `Query`, `QueryAsync` (50 concurrent calls on one session), binary blocks (10,000,000 bytes in one read at about 10 MiB/s, byte-identical to the VXI-11 read of the same capture), PNG screenshots (blocks with 0x0A bytes, termination character on), `WriteBinaryBlock`, `QueryAsciiValues`, a 65,000-byte command, `ReadStatusByte` through `*STB?`, read timeout then recovery, a timeout in a slow response then `Clear()` after the rest arrived, cancelling `ReadStringAsync` then `Clear()`, `Clear()` discarding a late reply, process-local exclusive lock, two socket sessions open at once, every supported attribute reads (26) |
 | Both | VXI-11 and socket sessions open at the same time; about 24 ms per query, synchronous or asynchronous |
 
-Not confirmed on the instrument: cancelling a VXI-11 call (`device_abort`) crashed the oscilloscope application
-the one time it ran; `Dispose` from another thread during a VXI-11 read, and two VXI-11 sessions querying in
-parallel (both covered by the simulator tests only); `Clear()` on VXI-11 with a response pending (it worked once,
-then twice left the instrument failing every read, see the notes).
-Running these checks found that `Vxi11Client.Dispose` did not send `destroy_link`, which used up the instrument's two
-links; it does now.
+Not confirmed, because the instrument does not support it: cancelling with `device_abort` (any `device_abort`
+restarts the oscilloscope application), service requests, lock waits, a working `device_readstb` or
+`device_trigger`, and several sessions querying at once (the instrument has one output queue for all clients). See
+[TCP/IP: Rigol DHO800 series](tcpip.md#rigol-dho800-series).
+
+These runs found three problems in VisaCs, fixed since: `Vxi11Client.Dispose` did not send `destroy_link` (each
+disposed client used up one of the instrument's links until it restarted); a synchronous read ended by `Dispose`
+from another thread threw a raw `SocketException`; and there was no way to cancel a VXI-11 call without
+`device_abort` (now `Vxi11AbortOnCancel`, `Vxi11Client.AbortOnCancel`).
 
 ## Operations by session type
 
@@ -113,7 +116,7 @@ links; it does now.
 | Service request event | ✔ | ✔ | ✘ | ◐⁸ | ✔⁵ | — | ✘ | ✔ | ✔ | ✘ |
 | USB interrupt event | — | — | — | — | ✔ | ✔ | — | — | — | — |
 | Exclusive / shared lock (`viLock`) | ✔⁹ | ✔⁹ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
-| Cancellation of `*Async` calls | ✔ `device_abort` | ✔¹⁰ | ✔¹⁰ | ✔¹⁰ | ✔ abort sequence | ✔¹⁰ | ✔ I/O cancel | ◐¹¹ | ◐¹¹ | — |
+| Cancellation of `*Async` calls | ✔ `device_abort`¹³ | ✔¹⁰ | ✔¹⁰ | ✔¹⁰ | ✔ abort sequence | ✔¹⁰ | ✔ I/O cancel | ◐¹¹ | ◐¹¹ | — |
 | Asynchronous I/O, no thread while waiting (`QueryAsync`, ...) | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔¹¹ | ✔¹¹ | — |
 | Register access (`viIn*`, `viOut*`, `viMoveIn*`, `viMoveOut*`, `viMapAddress`, `viPeek*`, `viPoke*`) | — | — | — | — | — | — | — | — | — | ✔ |
 | GPIB bus commands (`viGpibCommand`, `viGpibSendIFC`, `viGpibControlATN`, `viGpibPassControl`) | — | — | — | — | — | — | — | — | ✔ | — |
@@ -127,7 +130,9 @@ Notes:
 3. Serial END is configurable with `EndInput` (`VI_ATTR_ASRL_END_IN`): termination character (default), last
    bit, or none.
 4. Sent as `*STB?` and the reply is parsed. NI-VISA does this only when `VI_ATTR_IO_PROT` is
-   `VI_PROT_4882_STRS`; VisaCs always does it, because these interfaces have no other way to read it.
+   `VI_PROT_4882_STRS`; VisaCs always does it, because these interfaces have no other way to read it. Read any
+   pending response first: otherwise that response is taken as the answer (`VI_ERROR_IO` if it is not a number)
+   and the real answer is read by the next query.
 5. USB488 interfaces only (interface protocol 1) and only if the device reports the capability. Plain USBTMC
    devices return `VI_ERROR_NSUP_OPER`.
 6. Discards buffered data. Also sends `*CLS` when `IOProtocol` is `Ieee4882Strings`.
@@ -142,6 +147,8 @@ Notes:
     trigger have no asynchronous form; they run on one worker thread per board and, once started, end at their
     timeout. Driver libraries without `ibrda` run every call that way.
 12. A short bulk packet ends the read.
+13. Unless `ResourceManagerOptions.Vxi11AbortOnCancel` is false; then the cancelled call ends at once and the
+    instrument finishes it before the next call (see [TCP/IP](tcpip.md#timeouts-cancellation-and-threads)).
 
 Every session supports attributes through `GetAttribute`/`SetAttribute` and typed properties. The full list
 per session type, generated from live sessions, is in [attributes.md](attributes.md).

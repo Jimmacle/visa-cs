@@ -79,6 +79,19 @@ public sealed class Vxi11Client : IDisposable
     public bool IsBusy => _core.IsBusy;
 
     /// <summary>
+    /// Whether the client sends <c>device_abort</c> on its own: when an asynchronous call is cancelled, and to end a
+    /// lock request whose reply did not arrive in time. Default true. When false, a cancelled call still ends at once
+    /// with <see cref="OperationCanceledException"/>, but the device finishes the abandoned call (at the latest when its
+    /// <c>io_timeout</c> passes) before it answers the next one, and the late reply is discarded.
+    /// <see cref="Abort"/> and <see cref="BeginAbort"/> are not affected.
+    /// </summary>
+    /// <remarks>
+    /// Set it to false for instruments that cannot handle <c>device_abort</c>: any device_abort, even with no call in
+    /// progress, restarts the Rigol DHO800 series' oscilloscope application.
+    /// </remarks>
+    public bool AbortOnCancel { get; set; } = true;
+
+    /// <summary>
     /// Asks the portmapper of <paramref name="host"/> for the core channel, connects to it, creates a link to
     /// <paramref name="deviceName"/> (e.g. <c>inst0</c>, or <c>gpib0,5</c> on a GPIB gateway) and connects the abort
     /// channel. The timeout covers all of it. A create_link error throws (<see cref="Vxi11Errors.ToException"/>).
@@ -167,7 +180,7 @@ public sealed class Vxi11Client : IDisposable
         CancellationToken cancellationToken, bool abortOnCancel = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        using var registration = abortOnCancel && cancellationToken.CanBeCanceled
+        using var registration = abortOnCancel && AbortOnCancel && cancellationToken.CanBeCanceled
             ? cancellationToken.UnsafeRegister(static s => ((Vxi11Client)s!).BeginAbort(), this)
             : default;
         return await LanCall.RunAsync(call(this, LanCall.DeadlineFor(timeoutMilliseconds, cancellationToken)), cancellationToken)
@@ -433,7 +446,7 @@ public sealed class Vxi11Client : IDisposable
     private void ReleaseAbandonedLock(uint lockTimeout)
     {
         if (_disposed) return;
-        BeginAbort();
+        if (AbortOnCancel) BeginAbort();
         // The core channel runs calls in order: this unlock runs after the abandoned device_lock ends. This link held no
         // device lock before (VISA takes it once per session), so the unlock only releases a late grant.
         int wait = (int)Math.Min(lockTimeout, int.MaxValue - ReplySlackMs) + ReplySlackMs;
@@ -578,9 +591,9 @@ public sealed class Vxi11Client : IDisposable
     /// first and destroy_link goes over a new connection.
     /// </summary>
     /// <remarks>
-    /// VXI-11 servers should destroy a link when its connection closes, but some keep it until destroy_link
-    /// (the Rigol DHO800 series does, and accepts only two links), so a client that only closed the connection would use
-    /// up the instrument's links.
+    /// VXI-11 servers should destroy a link when its connection closes, but some do not (on the Rigol DHO800 series such
+    /// a link uses up one of its 16 until the instrument restarts), so a client that only closed the connection would
+    /// use up the instrument's links.
     /// </remarks>
     public void Dispose()
     {

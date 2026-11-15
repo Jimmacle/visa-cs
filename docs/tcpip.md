@@ -154,6 +154,9 @@ using var s = rm.Open<TcpipSocketSession>("TCPIP::192.168.1.5::5025::SOCKET");
 - `ReadStatusByte` sends `*STB?` and parses the reply; `AssertTrigger` sends `*TRG`; `Clear` discards
   buffered input (and sends `*CLS` when `IOProtocol` is `Ieee4882Strings`). Remote/local control and service
   requests are not available.
+- Read every response before `ReadStatusByte`: with a response unread, the session takes that response as the
+  answer to `*STB?` (it fails with `VI_ERROR_IO` unless the response happens to be a number), and the real answer
+  arrives as the reply to the next query.
 - `NoDelay` (`VI_ATTR_TCPIP_NODELAY`, default true) and `KeepAlive` (`VI_ATTR_TCPIP_KEEPALIVE`) are
   settable.
 - After a timeout the late reply is still on its way. Wait for it, then `Clear()`.
@@ -176,7 +179,7 @@ call throws `OperationCanceledException`. What remains afterwards depends on the
 
 | Protocol | After a timeout or cancellation |
 |---|---|
-| VXI-11 | Cancelling sends `device_abort` on the abort channel, so the instrument ends the pending call. The session stays usable; the late reply is discarded. Lock requests are aborted too, and a lock the instrument grants afterwards is released again. |
+| VXI-11 | Cancelling sends `device_abort` on the abort channel, so the instrument ends the pending call. The session stays usable; the late reply is discarded. Lock requests are aborted too, and a lock the instrument grants afterwards is released again. With `ResourceManagerOptions.Vxi11AbortOnCancel = false` (for instruments that cannot handle `device_abort`) no abort is sent: the next call waits until the instrument has finished the cancelled one, at the latest when its timeout passes. |
 | HiSLIP | A read keeps its place: the next read continues the same response (in synchronized mode the next write discards it). A late answer to a status, lock or clear request is discarded, and a lock granted after its request was cancelled is released again. |
 | Raw socket, VICP | The late response is still on its way: wait for it, then `Clear()`. |
 
@@ -219,31 +222,57 @@ Tested with a DHO804, firmware 00.01.03, from Windows (see the
 `hislip0` fails with `VI_ERROR_RSRC_NFOUND`) and did not answer mDNS queries, so `Find` lists it through the VXI-11
 broadcast only.
 
-- **Prefer the socket resource.** It was faster for bulk data (10 M samples: 10.3 MiB/s against 7.2 MiB/s over
-  VXI-11), and cancelling a read there and calling `Clear()` works. On VXI-11 the problems below apply.
-- **Only two VXI-11 links at a time.** A third session fails to open with `VI_ERROR_ALLOC` (`create_link`: out of
-  resources). The instrument keeps a link after its connection closes until it receives `destroy_link`, which
-  VisaCs sends when a session or `Vxi11Client` is disposed. Links left behind by a killed process stay until the
-  instrument restarts.
-- **Do not cancel VXI-11 calls.** Cancelling an `*Async` call sends `device_abort`; the one time this was tried, the
-  oscilloscope application crashed and the VXI-11 server refused connections until it had restarted. The instrument
-  reports its core channel's port as the abort channel's port.
-- **Avoid `Clear()` with a response pending.** After a `device_clear` that discarded an unread response, every
-  read failed at once with `VI_ERROR_TMO` (two of three tries), on that link and once also on links opened right
-  after it; it recovered later without a restart. Read the response instead. One response left unread on a link was later read by a query on another link, so the
-  instrument appears to have one output queue for all links.
+```csharp
+// Settings for this instrument over VXI-11.
+var options = new ResourceManagerOptions { Vxi11AbortOnCancel = false };
+```
+
+- **Set `Vxi11AbortOnCancel = false`.** Any `device_abort`, even with no call in progress, restarts the
+  oscilloscope application (three of three tries; VXI-11 and the socket are gone for 30 to 100 s). VisaCs sends it
+  when an asynchronous VXI-11 call is cancelled. With the option off, a cancelled call ends at once and the next
+  call waits until the instrument has finished the abandoned one (at the latest when its timeout passes). The
+  instrument's portmapper and `create_link` advertise the abort channel (on the core channel's port), so the
+  client cannot tell that it does not work.
+- **Use one session at a time.** The instrument has a single output queue for all clients. Two sessions querying
+  at the same time (VXI-11 links or sockets) get each other's replies or lose them, and the leftovers shift every
+  later reply by one, even in sessions opened afterwards; only a restart cleared it. Queries in a fixed order
+  (A writes, B writes, A reads, B reads) do work. Within one process, the concurrent `QueryAsync` calls of one
+  session are serialized and safe.
+- **Prefer the socket resource.** It is faster for bulk data (10 M samples: about 10 MiB/s against 7.5 MiB/s over
+  VXI-11, whatever `ReadChunkSize`), cancelling a read and then calling `Clear()` works, and it avoids the VXI-11
+  problems below.
+- **The VXI-11 server handles one call at a time, for all links.** A read that waits for data (a query that was
+  never sent, or a slow response) holds up every other VXI-11 call, including `create_link` from other clients,
+  until its timeout passes. Keep VXI-11 timeouts short. For the same reason, a session disposed while it waits in
+  a read cannot send `destroy_link` in time (`Dispose` gives up after 1 s); in the test, the instrument had freed
+  that link itself by the time the read ended.
+- **Links.** A freshly started instrument accepts 16 VXI-11 links; another session then fails to open with
+  `VI_ERROR_ALLOC` (`create_link`: out of resources). A link whose connection closes without `destroy_link` (a
+  killed process, a `Vxi11Client` of VisaCs before this was fixed) uses up one of the 16 until the instrument
+  restarts, even when the link itself is later destroyed or its number reused. VisaCs sends `destroy_link` whenever
+  a session or `Vxi11Client` is disposed.
+- **Do not `Clear()` a VXI-11 session with a response pending.** After a `device_clear` that discarded an unread
+  response, the next read failed at once with `VI_ERROR_TMO` in seven of eight tries, and in six of them every
+  later read on that link did too, for as long as it was tried (20 s); new sessions worked. Read the response instead: after a timeout, `ReadToEnd()` with a longer timeout
+  collects the rest. `Clear()` with nothing pending is fine.
+- **Long commands.** Commands of up to 65,000 bytes worked over the socket, and 70,000 bytes over VXI-11 (split
+  into two `device_write` calls at the instrument's `MaxReceiveSize` of 65,536). A 100 KB line made of 20,000
+  `*CLS` commands hung the command parser until a restart; `device_clear` did not help.
 - **`ReadStatusByte` on VXI-11 always returns 0x88** (`device_readstb` is answered with a constant). Query `*STB?`
   instead; on the socket resource `ReadStatusByte` does exactly that and works.
 - **No service requests.** The instrument rejects `create_intr_chan`, so `EnableEvent(EventType.ServiceRequest)`
   throws `VI_ERROR_NSUP_OPER`. Poll `*STB?` or the acquisition state (`:TRIG:STAT?`) instead.
-- **`*TRG` is not a command** (it shows "remote cmd execute error" on the screen and queues
-  `-100,"Command error"`), so `AssertTrigger` on the socket resource does nothing useful. On VXI-11 it sends
-  `device_trigger`, which the instrument accepts. `:TFORce` forces a trigger.
+- **No trigger through `AssertTrigger`.** `*TRG` is not a command (it shows "remote cmd execute error" on the screen
+  and queues `-100,"Command error"`), which is what `AssertTrigger` sends on the socket resource. Over VXI-11 the
+  instrument accepts `device_trigger` but does not trigger. Send `:TFORce` to force a trigger.
 - **Locks.** `device_lock` ignores its wait time, so `LockExclusive` fails at once with `VI_ERROR_TMO` while
   another link holds the lock, whatever the timeout. While a link holds the lock, the instrument refuses new links
   (`VI_ERROR_RSRC_LOCKED` when opening a session).
 - `device_read` ignores the termination character; responses end with END, so reads still end correctly.
   `device_docmd` is not supported (`VI_ERROR_NSUP_OPER`).
+- Useful blocks: `:SYST:SET?` returns the setup (about 2.7 KB), which `WriteBinaryBlock(":SYST:SET ", setup)`
+  restores; `:DISP:DATA? PNG` returns a screenshot; `:WAV:FORM ASC` data is a plain comma-separated list for
+  `QueryAsciiValues`.
 
 ## Without VISA
 

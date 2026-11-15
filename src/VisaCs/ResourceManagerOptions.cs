@@ -26,6 +26,15 @@ public sealed class ResourceManagerOptions
     /// <summary>Portmapper port used to locate VXI-11 servers. Standard: 111.</summary>
     public int Vxi11PortmapperPort { get; set; } = 111;
 
+    /// <summary>
+    /// Whether VXI-11 sessions send <c>device_abort</c> when an asynchronous call is cancelled (and to end a lock request
+    /// that timed out). Default true. When false, the cancelled call still ends at once, but the instrument finishes it
+    /// (at the latest when the session timeout passes) before it answers the next call. Set it to false for instruments
+    /// that cannot handle device_abort, such as the Rigol DHO800 series, whose oscilloscope application restarts on any
+    /// device_abort. Applies to sessions opened afterwards.
+    /// </summary>
+    public bool Vxi11AbortOnCancel { get; set; } = true;
+
     /// <summary>Default HiSLIP port when the resource name does not specify one. Standard: 4880.</summary>
     public int HislipPort { get; set; } = 4880;
 

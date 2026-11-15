@@ -49,7 +49,7 @@ if (reply.Error != Vxi11Error.None) throw Vxi11Errors.ToException(reply.Error, "
 - The package depends on no other package; every type is in `VisaCs.Lan` (ONC RPC in `VisaCs.Lan.Rpc`).
 - `timeoutMilliseconds` bounds the call: negative (`Timeout.Infinite`) waits without limit, 0 does not wait. A
   timeout throws `LanTimeoutException` (a `TimeoutException`, with `BytesTransferred`), and cancelling the token
-  `OperationCanceledException`. Cancelling a VXI-11 call also sends `device_abort`.
+  `OperationCanceledException`. Cancelling a VXI-11 call also sends `device_abort`, unless `AbortOnCancel` is false.
 - Other failures throw `LanException` (an `IOException`) whose `Error` (`LanError`) names the cause:
   `ConnectionLost`, `HostNotFound`, `ConnectionRefused`, `DeviceNotFound`, `ProtocolError`, `ServerError`,
   `NotSupported`, `InvalidRequest`, `Locked`, `NotLocked`, `Busy`, `Aborted`, `OutOfResources`, `Security`,
@@ -58,8 +58,10 @@ if (reply.Error != Vxi11Error.None) throw Vxi11Errors.ToException(reply.Error, "
   RPC `AcceptStatus`).
 - VXI-11 calls return the device's error code (`Vxi11Error`) instead of throwing it; `Vxi11Errors.ToException`
   makes it an exception.
-- Dispose a `Vxi11Client` when you are done: `Dispose` sends `destroy_link`. Some instruments keep a link after its
-  connection closes and allow only a few (the Rigol DHO800 series allows two).
+- Dispose a `Vxi11Client` when you are done: `Dispose` sends `destroy_link`. Some instruments do not free a link
+  when its connection closes, and they allow only a few.
+- Set `AbortOnCancel = false` for instruments that cannot handle `device_abort` (it restarts the Rigol DHO800
+  series' oscilloscope application).
 - Use one caller at a time for a connection's data I/O.
 
 More in the [TCP/IP guide](https://github.com/Jimmacle/visa-cs/blob/main/docs/tcpip.md#without-visa).
