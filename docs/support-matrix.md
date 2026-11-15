@@ -2,8 +2,9 @@
 
 This page lists what VisaCs supports, on which operating systems, and how each part has been verified.
 "Verified" means exercised by the automated tests in `tests/` or by the runs listed under
-[How each backend was verified](#how-each-backend-was-verified). Nothing here has been run against a physical instrument
-yet, so read the verification column before you depend on a backend.
+[How each backend was verified](#how-each-backend-was-verified). Only the VXI-11 and raw socket clients and LAN
+discovery have been run against a physical instrument (a Rigol DHO804 oscilloscope, see
+[Hardware runs](#hardware-runs)), so read the verification column before you depend on a backend.
 
 Legend: **✔** supported · **◐** partial (see notes) · **✘** not supported · **—** not applicable
 
@@ -36,12 +37,13 @@ Windows 11 and x64 Arch Linux under WSL2 (kernel 6.18). The code avoids architec
 
 | Area | Backend | Verified against | Level |
 |---|---|---|---|
-| VXI-11 client | managed | VisaCs simulator (Windows, Linux) | Simulator |
+| VXI-11 client | managed | VisaCs simulator (Windows, Linux); Rigol DHO804 oscilloscope (Windows) | Hardware |
 | VXI-11 server (simulator) | managed | PyVISA-py 0.8.1 client | Independent implementation |
 | HiSLIP client (2.0, and 1.0 servers) | managed | VisaCs simulator | Simulator |
 | HiSLIP 2.0 security (TLS, SASL) | managed | VisaCs simulator (18 tests, SChannel on Windows and OpenSSL on Linux) | Simulator |
 | HiSLIP server (simulator) | managed | PyVISA-py 0.8.1 client | Independent implementation |
-| Raw socket | managed | VisaCs simulator, PyVISA-py | Simulator + independent |
+| Raw socket | managed | VisaCs simulator, PyVISA-py; Rigol DHO804 oscilloscope (Windows) | Hardware |
+| LAN discovery | managed | VXI-11 broadcast and unicast: Rigol DHO804. mDNS: `MdnsTestResponder`, and other devices' responders on a LAN (the DHO804 does not answer mDNS) | Hardware |
 | VICP | managed | VisaCs simulator, PyVISA-py | Simulator + independent |
 | USBTMC / USB488 protocol | managed | Simulated USB backend (in-process) | Simulator |
 | USB on Linux | usbfs | Real Linux USB stack, simulated device attached through USB/IP (`vhci-hcd`) | Kernel |
@@ -58,16 +60,43 @@ Windows 11 and x64 Arch Linux under WSL2 (kernel 6.18). The code avoids architec
 
 Levels, strongest first:
 
-- **Independent implementation**: checked against code written by someone else (PyVISA-py). This is the only
-  check that catches a misreading of a specification shared by the client and the simulator.
-- **Kernel / OS driver / Hardware**: the real operating-system code path runs (Linux USB core and usbfs, a
+- **Hardware**: checked against a physical instrument's own server (its firmware). Like an independent
+  implementation, this catches a misreading of a specification shared by the client and the simulator, and it
+  also shows how real instruments deviate from it.
+- **Independent implementation**: checked against code written by someone else (PyVISA-py).
+- **Kernel / OS driver / Hardware (no peer)**: the real operating-system code path runs (Linux USB core and usbfs, a
   Linux pty, a Windows serial port driver).
 - **Fake driver**: the real P/Invoke binding runs against a stand-in native library with the same C API.
 - **Simulator**: VisaCs talks to its own simulator. Both sides follow the same reading of the specification.
 - **Untested**: compiled, never executed.
 
-Not done yet: VisaCs as a client against an independent VXI-11 or HiSLIP server (a real instrument or another
-project's server), any physical USB, GPIB or PXI instrument, and anything on macOS.
+Not done yet: VisaCs as a client against an independent HiSLIP server; the VXI-11 features the DHO804 does not
+offer (interrupt channel and service requests, lock waits, `device_docmd`, GPIB gateways); any physical USB, GPIB
+or PXI instrument; and anything on macOS.
+
+## Hardware runs
+
+### Rigol DHO804 oscilloscope over VXI-11 and raw socket
+
+Firmware 00.01.03, client on Windows 11 with .NET 10, 2026-11-15. A throwaway program ran each operation against the
+instrument and compared the results with what the instrument should return (`*IDN?`, settings it reports in other
+ways, `:SYST:ERR?` after each step). The instrument's own deviations from VXI-11 and IEEE 488.2 are listed in
+[TCP/IP: Rigol DHO800 series](tcpip.md#rigol-dho800-series).
+
+| Area | Confirmed |
+|---|---|
+| Discovery | `Vxi11Discovery` broadcast and `ResourceManager.FindResources` with a unicast target and broadcast off find the instrument; portmapper `GETPORT` over TCP |
+| `Vxi11Client` | `create_link` (an unknown device name is refused: `InvalidRequest`), `device_write`/`device_read` with END, reads in 8-byte pieces, `device_readstb`, `device_trigger`, `device_clear`, `device_remote`, `device_local`, `device_lock`/`device_unlock` seen by a second link, `destroy_link` on `Dispose` (no link left behind after a full run) |
+| VXI-11 session | `Query`, `Query<T>`, `QueryAsync`; `Read` reporting `EndReceived` and `MaximumCountReached` (then the rest of the same response); `ReadChunkSize` 7; `Printf`/`Queryf`/`Scanf`; `QueryAsciiValues`; `QueryBinaryValues<byte>`/`<ushort>`; binary blocks containing 0x0A with the termination character on and off; a 10,000,000-byte block in one read (7.2 MiB/s); 1 M-point WORD blocks; read timeout honored by the instrument (`io_timeout`, 1000 ms → 1005 ms) and the session usable afterwards; timeout 0; `ControlRen` (all four modes); exclusive lock blocks another link's I/O and lock (`DeviceLocked`), and is visible as `VI_ERROR_RSRC_LOCKED` to a session while another link holds it; `EnableEvent(ServiceRequest)` reports the instrument's lack of an interrupt channel as `VI_ERROR_NSUP_OPER`; opening a third session fails with `VI_ERROR_ALLOC` (the instrument's two-link limit) |
+| Socket session | `Query`, binary blocks (10,000,000 bytes in one read at 10.3 MiB/s, byte-identical to the VXI-11 read of the same capture), PNG screenshots (blocks with 0x0A bytes, termination character on), `ReadStatusByte` through `*STB?`, read timeout then recovery, cancelling `ReadStringAsync` then `Clear()`, `Clear()` discarding a late reply, process-local exclusive lock |
+| Both | VXI-11 and socket sessions open at the same time; about 24 ms per query, synchronous or asynchronous |
+
+Not confirmed on the instrument: cancelling a VXI-11 call (`device_abort`) crashed the oscilloscope application
+the one time it ran; `Dispose` from another thread during a VXI-11 read, and two VXI-11 sessions querying in
+parallel (both covered by the simulator tests only); `Clear()` on VXI-11 with a response pending (it worked once,
+then twice left the instrument failing every read, see the notes).
+Running these checks found that `Vxi11Client.Dispose` did not send `destroy_link`, which used up the instrument's two
+links; it does now.
 
 ## Operations by session type
 

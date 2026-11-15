@@ -38,6 +38,11 @@ using var s = rm.Open<TcpipVxi11Session>("TCPIP::192.168.1.5::inst0::INSTR");
   holds: it fails at once with `VI_ERROR_RSRC_LOCKED`.
 - GPIB gateways use device names such as `gpib0,5` (`TCPIP::10.0.0.2::gpib0,5::INSTR`).
 - `DoCommand` sends `device_docmd` for gateway-specific commands.
+- Closing the session sends `destroy_link`, also when it is closed while a call runs on another thread (then over a
+  new connection, after closing the old one ends the call). VXI-11 servers should destroy a link when its connection
+  closes, but some instruments keep it, and they allow only a few links, so a link that is never destroyed can lock
+  you out of the instrument until it restarts. A process that is killed before it closes its sessions leaves its
+  links behind on such instruments.
 
 **Service requests** use the VXI-11 interrupt channel: when you enable `EventType.ServiceRequest`, the session
 starts a small RPC server on an ephemeral TCP port and asks the instrument to connect back to it
@@ -203,6 +208,42 @@ blocks every thread-pool thread can delay these calls until the pool adds thread
 
 Both LAN mechanisms listen for `LanDiscoveryTimeoutMilliseconds` (1000 ms). `FindResources` returns the mDNS
 instance name as the description.
+
+## Instrument notes
+
+### Rigol DHO800 series
+
+Tested with a DHO804, firmware 00.01.03, from Windows (see the
+[support matrix](support-matrix.md#hardware-runs) for everything that was checked). The instrument offers
+`TCPIP::<address>::inst0::INSTR` (VXI-11) and `TCPIP::<address>::5555::SOCKET`. It has no HiSLIP server (opening
+`hislip0` fails with `VI_ERROR_RSRC_NFOUND`) and did not answer mDNS queries, so `Find` lists it through the VXI-11
+broadcast only.
+
+- **Prefer the socket resource.** It was faster for bulk data (10 M samples: 10.3 MiB/s against 7.2 MiB/s over
+  VXI-11), and cancelling a read there and calling `Clear()` works. On VXI-11 the problems below apply.
+- **Only two VXI-11 links at a time.** A third session fails to open with `VI_ERROR_ALLOC` (`create_link`: out of
+  resources). The instrument keeps a link after its connection closes until it receives `destroy_link`, which
+  VisaCs sends when a session or `Vxi11Client` is disposed. Links left behind by a killed process stay until the
+  instrument restarts.
+- **Do not cancel VXI-11 calls.** Cancelling an `*Async` call sends `device_abort`; the one time this was tried, the
+  oscilloscope application crashed and the VXI-11 server refused connections until it had restarted. The instrument
+  reports its core channel's port as the abort channel's port.
+- **Avoid `Clear()` with a response pending.** After a `device_clear` that discarded an unread response, every
+  read failed at once with `VI_ERROR_TMO` (two of three tries), on that link and once also on links opened right
+  after it; it recovered later without a restart. Read the response instead. One response left unread on a link was later read by a query on another link, so the
+  instrument appears to have one output queue for all links.
+- **`ReadStatusByte` on VXI-11 always returns 0x88** (`device_readstb` is answered with a constant). Query `*STB?`
+  instead; on the socket resource `ReadStatusByte` does exactly that and works.
+- **No service requests.** The instrument rejects `create_intr_chan`, so `EnableEvent(EventType.ServiceRequest)`
+  throws `VI_ERROR_NSUP_OPER`. Poll `*STB?` or the acquisition state (`:TRIG:STAT?`) instead.
+- **`*TRG` is not a command** (it shows "remote cmd execute error" on the screen and queues
+  `-100,"Command error"`), so `AssertTrigger` on the socket resource does nothing useful. On VXI-11 it sends
+  `device_trigger`, which the instrument accepts. `:TFORce` forces a trigger.
+- **Locks.** `device_lock` ignores its wait time, so `LockExclusive` fails at once with `VI_ERROR_TMO` while
+  another link holds the lock, whatever the timeout. While a link holds the lock, the instrument refuses new links
+  (`VI_ERROR_RSRC_LOCKED` when opening a session).
+- `device_read` ignores the termination character; responses end with END, so reads still end correctly.
+  `device_docmd` is not supported (`VI_ERROR_NSUP_OPER`).
 
 ## Without VISA
 
