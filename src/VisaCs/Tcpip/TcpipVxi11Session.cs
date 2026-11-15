@@ -78,6 +78,7 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
         {
             throw visa;
         }
+        _client.AbortOnCancel = ResourceManager.Options.Vxi11AbortOnCancel;
         Address = NetUtil.Normalize(_client.RemoteEndPoint.Address).ToString();
     }
 

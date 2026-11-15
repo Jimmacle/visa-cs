@@ -359,6 +359,26 @@ public sealed class Vxi11RobustnessTests(SimulatorFixture fixture) : IClassFixtu
     }
 
     [Fact]
+    public async Task CancellationSendsDeviceAbortUnlessDisabled()
+    {
+        using var sim = new InstrumentSimulator().Start();
+        foreach (bool abort in new[] { true, false })
+        {
+            var options = sim.CreateOptions();
+            options.Vxi11AbortOnCancel = abort;
+            using var rm = new ResourceManager(options);
+            using var session = rm.Open<TcpipVxi11Session>(sim.Vxi11Resource);
+            session.TimeoutMilliseconds = 2000;
+            int before = sim.Vxi11.AbortCount;
+            using (var cts = new CancellationTokenSource(300))
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.ReadStringAsync(cts.Token));
+            Assert.Equal(sim.Instrument.Identity, await session.QueryAsync("*IDN?"));
+            if (abort) Assert.True(sim.Vxi11.AbortCount > before);
+            else Assert.Equal(before, sim.Vxi11.AbortCount);
+        }
+    }
+
+    [Fact]
     public async Task ClosingDestroysTheLinkOnInstrumentsThatKeepLinksOfClosedConnections()
     {
         // Like the Rigol DHO800 series: only destroy_link frees a link, closing the connection does not.

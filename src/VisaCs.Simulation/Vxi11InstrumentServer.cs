@@ -75,6 +75,10 @@ public sealed class Vxi11InstrumentServer : IDisposable
     /// </summary>
     public bool KeepLinksOnDisconnect { get; set; }
 
+    /// <summary>Number of device_abort calls received on the abort channel.</summary>
+    public int AbortCount => Volatile.Read(ref _abortCount);
+    private int _abortCount;
+
     /// <summary>Number of links currently open.</summary>
     public int LinkCount
     {
@@ -526,6 +530,7 @@ public sealed class Vxi11InstrumentServer : IDisposable
     private RpcAcceptStatus HandleAbort(RpcCallContext context, XdrReader args, XdrWriter results)
     {
         if (context.Procedure != Vxi11Protocol.ProcDeviceAbort) return RpcAcceptStatus.ProcedureUnavailable;
+        Interlocked.Increment(ref _abortCount);
         int lid = args.ReadInt32();
         lock (_sync)
         {
