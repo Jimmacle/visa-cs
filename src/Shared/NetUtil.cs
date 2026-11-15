@@ -143,7 +143,17 @@ internal static class NetUtil
             if (remaining == 0) return false;
             // Poll takes microseconds as an int; slice long waits.
             int slice = remaining < 0 || remaining > 1_000_000 ? 1_000_000 : remaining;
-            if (socket.Poll(slice * 1000, mode)) return true;
+            bool ready;
+            try
+            {
+                ready = socket.Poll(slice * 1000, mode);
+            }
+            catch (SocketException ex)
+            {
+                // Closed by another thread (Dispose) while waiting: WSAEINTR on Windows.
+                throw ConnectionLost($"Socket wait failed: {ex.SocketErrorCode}.", ex);
+            }
+            if (ready) return true;
             if (deadline.HasExpired) return false;
         }
     }

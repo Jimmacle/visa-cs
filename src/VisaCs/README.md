@@ -50,7 +50,8 @@ thread while it waits. The session timeout throws `VisaTimeoutException`; cancel
 | `PXI INSTR` | ✘ | ✔ sysfs | ✘ |
 
 - GPIB needs the board vendor's NI-488.2 compatible library (NI, Keysight, linux-gpib), loaded at run time.
-- macOS support is written but has never been run. Nothing has been run against a physical instrument yet; the
+- macOS support is written but has never been run. Only VXI-11, raw sockets and LAN discovery have been run
+  against a physical instrument (a Rigol DHO804 oscilloscope); the
   [support matrix](https://github.com/Jimmacle/visa-cs/blob/main/docs/support-matrix.md) shows how each backend
   was verified.
 

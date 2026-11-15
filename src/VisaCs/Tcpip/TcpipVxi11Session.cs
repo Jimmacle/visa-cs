@@ -59,8 +59,8 @@ public sealed class TcpipVxi11Session : TcpipInstrumentSession
     private Vxi11Client Client => _client ?? throw new VisaException(VisaStatus.ErrorInvalidObject, "The session is not open.");
 
     /// <summary>
-    /// True while the session is being closed and a core-channel call is still in progress (on another thread). Closing
-    /// the connection then ends that call, and the instrument destroys the link and its locks itself.
+    /// True while the session is being closed and a core-channel call is still in progress (on another thread). Disposing
+    /// the client then closes the connection, which ends that call, and destroys the link over a new connection.
     /// </summary>
     private bool ClosingWhileBusy => IsDisposed && _client is { IsBusy: true };
 

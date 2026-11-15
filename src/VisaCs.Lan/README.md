@@ -58,6 +58,8 @@ if (reply.Error != Vxi11Error.None) throw Vxi11Errors.ToException(reply.Error, "
   RPC `AcceptStatus`).
 - VXI-11 calls return the device's error code (`Vxi11Error`) instead of throwing it; `Vxi11Errors.ToException`
   makes it an exception.
+- Dispose a `Vxi11Client` when you are done: `Dispose` sends `destroy_link`. Some instruments keep a link after its
+  connection closes and allow only a few (the Rigol DHO800 series allows two).
 - Use one caller at a time for a connection's data I/O.
 
 More in the [TCP/IP guide](https://github.com/Jimmacle/visa-cs/blob/main/docs/tcpip.md#without-visa).

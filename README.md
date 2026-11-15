@@ -52,8 +52,10 @@ sessions are register-based: attributes, locks and register access.
 **Testing status.** Every protocol is tested end to end against the bundled simulators. The usbfs and libusb
 backends are tested against the real Linux USB stack (a simulated device attached through USB/IP), the GPIB
 binding against a stand-in NI-488.2 library, Win32 serial against a real UART, termios through a
-pseudo-terminal, and the simulator servers against PyVISA-py. Nothing has been run against a physical
-instrument yet. The [support matrix](docs/support-matrix.md) has the details for every backend and feature.
+pseudo-terminal, and the simulator servers against PyVISA-py. The VXI-11 and raw socket clients and LAN
+discovery have been run against one physical instrument, a Rigol DHO804 oscilloscope
+([notes on it](docs/tcpip.md#rigol-dho800-series)); no other backend has met real hardware yet. The
+[support matrix](docs/support-matrix.md) has the details for every backend and feature.
 
 ## Install
 
@@ -123,9 +125,9 @@ kernel USB, GPIB binding, real PCI) are described in [Simulator and tests](docs/
 
 ## Main limitations
 
-- Not yet run against physical instruments, WinUSB transfers, or macOS.
-- VisaCs as a client has only been checked against its own VXI-11 and HiSLIP simulators, not against an
-  independent server implementation.
+- Only one physical instrument so far (a Rigol DHO804, over VXI-11 and raw socket). Not yet run against USB,
+  GPIB or PXI hardware, WinUSB transfers, or macOS.
+- The HiSLIP client has only been checked against its own simulator, not against an independent server.
 - VXI, GPIB-VXI, PXI triggers and interrupts, and VISA's `viReadAsync`-style I/O completion events are not
   implemented (use the `*Async` methods instead).
 - No persistent configuration store: aliases and static resources are set in `ResourceManagerOptions`.
