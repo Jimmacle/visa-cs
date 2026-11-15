@@ -19,7 +19,7 @@ Console.WriteLine(s.Query("*IDN?"));
 | Class | What it simulates |
 |---|---|
 | `SimulatedInstrument` | The instrument: `*IDN?`, `*RST`, `*CLS`, `*ESE[?]`, `*ESR?`, `*SRE[?]`, `*STB?`, `*OPC[?]`, `*TRG`, `*WAI`, `*TST?`, `ECHO? text`, `MEAS:VOLT?`, `SYST:ERR?`, `TRIG:COUNT?`, `SRQ`, `DATA:BIN? n`, `DATA:BIN:INDEF? n`, `DATA:FLOAT? n`, `DATA:ASCII? n`, `DATA:LARGE? n`, `DATA:STORE <block>`, `DATA:STORE?`, `DELAY ms`, `DELAY? ms`. Add commands with `CustomHandler`. |
-| `Vxi11InstrumentServer` | Portmapper, core, abort and interrupt channels. `MaxReceiveSize` sets the write limit; `KeepLinksOnDisconnect` keeps links after their connection closes, as some instruments do (the Rigol DHO800 series) |
+| `Vxi11InstrumentServer` | Portmapper, core, abort and interrupt channels. `MaxReceiveSize` sets the write limit, `AbortCount` counts device_abort calls; `KeepLinksOnDisconnect` keeps links after their connection closes, as some instruments do (the Rigol DHO800 series) |
 | `HislipInstrumentServer` | HiSLIP 1.0 and 2.0, including TLS (`Certificate`, `EncryptionMandatory`, `InitialEncryptionRequired`) and SASL (`RequireAuthentication`, `SaslMechanisms`, `Users`, `TrustedClientCertificates`); `CreateSelfSignedCertificate` makes a test certificate |
 | `SocketInstrumentServer`, `VicpInstrumentServer` | Raw socket and VICP |
 | `SimulatedUsbBackend`, `SimulatedUsbTmcDevice` | A USBTMC/USB488 device behind an in-process USB backend, with abort/clear sequences, interrupt-IN SRQ and vendor-specific message loopback |
